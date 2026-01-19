@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,320 +10,263 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from collections import defaultdict
-import argparse
 import config
 
-# ================= 参数配置 =================
-parser = argparse.ArgumentParser()
-parser.add_argument('--BEAM_SIZE', type=int, default=50, help="Beam search width")
-parser.add_argument('--MODEL_PATH', type=str, required=True, help="Path to the trained checkpoint")
-args = parser.parse_args()
+# ================= 配置 =================
+BEAM_SIZE_LIST = [10, 20, 30, 40, 50]
+CHECKPOINT_LIST = [
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-1.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-2.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-3.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-4.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-5.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-6.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-7.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-8.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-9.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-10.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-11.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-12.pt",
+    "/home/jiangda/jiangyutao/Code/output/checkpoint-13.pt",
+]
+QRELS_FILE = "/home/jiangda/jiangyutao/Code/passages/qrels.dev.small.tsv"
+FINAL_OUTPUT_FILE = os.path.join(config.OUTPUT_DIR, "latest_result.trec")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# 路径配置
 BASE_MODEL_PATH = config.MODEL_NAME
 MEMMAP_PATH = config.MEMMAP_PATH
 ID2INDEX_PATH = config.ID2OFFSET
 QUERY_PATH = config.DEV_DOC_TRAIN_QUERIES
-OUTPUT_PATH = os.path.join(config.OUTPUT_DIR, "dev_results_layerwise.trec")
-
-# 推理参数
-BATCH_SIZE = 128
-NUM_WORKERS = 4
-EVAL_TOPK = 100
-BEAM_SIZE = args.BEAM_SIZE
-
-# 模型参数
 EMBEDDING_DIM = config.EMBEDDING_DIM
 TREE_HEIGHT = config.TREE_HEIGHT
 NODE_BALANCE = config.NODE_BALANCE
 QUERY_INSTRUCTION = "" 
+BATCH_SIZE = 128
+NUM_WORKERS = 4
+EVAL_TOPK = 100
 
-# ================= 模型组件 (Strictly Aligned with model.py) =================
-
-# [核心修改] 这里的 Similarity 必须与 model.py 完全一致
+# ================= 模型 =================
 class Similarity(nn.Module):
     def __init__(self, input_dim, dropout=0.1):
         super().__init__()
-        # 定义 MLP 结构：Linear -> LayerNorm -> GELU -> Dropout -> Linear
-        # 注意：虽然推理时 dropout 不生效，但结构必须定义，否则 load_state_dict 会报错找不到 key
-        self.q_mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.LayerNorm(input_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(input_dim, input_dim)
-        )
-        
-        self.c_mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.LayerNorm(input_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(input_dim, input_dim)
-        )
-
+        self.q_mlp = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(input_dim, input_dim))
+        self.c_mlp = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(input_dim, input_dim))
     def forward(self, query, candidates):
-        """
-        推理时的维度略有不同，但 Linear 层只处理最后一维，所以可以直接复用
-        query: [Batch, Beam, 1, Dim]
-        candidates: [Batch, Beam, NodeBalance, Dim]
-        """
-        # 1. MLP 投影 (支持广播)
-        q = self.q_mlp(query)      # [B, K, 1, D]
-        c = self.c_mlp(candidates) # [B, K, NB, D]
-        
-        # 2. 点积相似度: Sum(q * c)
-        # Broadcasting: (B, K, 1, D) * (B, K, NB, D) -> (B, K, NB, D)
-        scores = torch.sum(q * c, dim=-1) # -> [B, K, NB]
-        
-        return scores
+        return torch.sum(self.q_mlp(query) * self.c_mlp(candidates), dim=-1)
 
 class Encoder(nn.Module):
     def __init__(self, model_name):
         super().__init__()
-        cfg = AutoConfig.from_pretrained(model_name)
-        self.backbone = AutoModel.from_pretrained(model_name, config=cfg)
-
+        self.backbone = AutoModel.from_pretrained(model_name, config=AutoConfig.from_pretrained(model_name))
     def forward(self, input_ids, attention_mask):
-        out = self.backbone(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            return_dict=True
-        )
-        emb = out.last_hidden_state[:, 0]
-        return F.normalize(emb, dim=1)
+        return F.normalize(self.backbone(input_ids=input_ids, attention_mask=attention_mask, return_dict=True).last_hidden_state[:, 0], dim=1)
 
 class Indexer(nn.Module):
     def __init__(self):
         super().__init__()
-        
-        # 占位 embedding
         self.fixed_centroids = nn.Embedding(1, EMBEDDING_DIM)
-
-        # [对齐] 使用 MLP 版 Similarity
-        self.scorers = nn.ModuleList([
-            Similarity(EMBEDDING_DIM)
-            for _ in range(TREE_HEIGHT)
-        ])
+        self.scorers = nn.ModuleList([Similarity(EMBEDDING_DIM) for _ in range(TREE_HEIGHT)])
         self.logit_scale = nn.Parameter(torch.tensor(np.log(20.0)))
         self.adjacency = None
 
-# ================= 数据加载 =================
+# ================= 数据与资源 =================
 class QueryDataset(Dataset):
     def __init__(self, path, tokenizer, max_len=512):
         self.data = []
         self.tokenizer = tokenizer
         self.max_len = max_len
-        print(f"Loading queries from {path}...")
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.rstrip().split("\t")
-                if len(parts) >= 2:
-                    qid, text = parts[:2]
-                    self.data.append((qid, QUERY_INSTRUCTION + text))
-
-    def __len__(self):
-        return len(self.data)
-
+                if len(parts) >= 2: self.data.append((parts[0], QUERY_INSTRUCTION + parts[1]))
+    def __len__(self): return len(self.data)
     def __getitem__(self, idx):
         qid, text = self.data[idx]
-        enc = self.tokenizer(
-            text,
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_len,
-            return_tensors="pt"
-        )
+        enc = self.tokenizer(text, padding="max_length", truncation=True, max_length=self.max_len, return_tensors="pt")
         return qid, enc["input_ids"].squeeze(0), enc["attention_mask"].squeeze(0)
 
 def collate_fn(batch):
     qids, ids, masks = zip(*batch)
     return list(qids), torch.stack(ids), torch.stack(masks)
 
-class DocEmbeddingLookup:
-    def __init__(self, memmap_path: str, id2idx_path: str):
-        self.emb = np.memmap(memmap_path, dtype="float32", mode="r")
-        dim = EMBEDDING_DIM
-        self.emb = self.emb.reshape(-1, dim)
-        self.size = self.emb.shape[0]
-
-        self.docid2idx = {}
-        self.docids = []
-        print(f"Loading docid map from {id2idx_path}...")
-        with open(id2idx_path, "r", encoding="utf-8") as f:
+class StaticResources:
+    def __init__(self):
+        self.doc_embeddings = np.fromfile(MEMMAP_PATH, dtype="float32").reshape(-1, EMBEDDING_DIM)
+        self.docid2idx, self.idx2docid = {}, {}
+        with open(ID2INDEX_PATH, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split("\t")
                 if len(parts) >= 2 and parts[1].isdigit():
-                    idx = int(parts[1])
-                    if 0 <= idx < self.size:
-                        self.docid2idx[parts[0]] = idx
-                        self.docids.append(parts[0])
-        self.docids = np.array(self.docids)
-
-    def get(self, docids):
-        pos = []
-        valid_docids = []
-        for d in docids:
-            idx = self.docid2idx.get(d)
-            if idx is not None:
-                pos.append(idx)
-                valid_docids.append(d)
-        if not pos: return [], None
-        return valid_docids, torch.from_numpy(self.emb[np.asarray(pos, dtype=np.int64)])
-
-# ================= 检索器逻辑 =================
-class NeuralRetriever:
-    def __init__(self, model_path):
-        print(f"Loading checkpoint: {model_path}")
-        ckpt = torch.load(model_path, map_location=DEVICE)
-
-        self.encoder = Encoder(BASE_MODEL_PATH).to(DEVICE)
-        self.indexer = Indexer().to(DEVICE)
-
-        # 加载 Encoder
-        self.encoder.load_state_dict(ckpt["encoder"], strict=False)
-
-        # 加载 Indexer
-        indexer_state = ckpt["indexer"]
-        
-        # 检查参数名是否匹配 (Debugging Help)
-        keys_in_ckpt = [k for k in indexer_state.keys() if 'scorers.0' in k]
-        if keys_in_ckpt and 'q_mlp' not in keys_in_ckpt[0]:
-            print("\n[WARNING] Checkpoint 似乎不包含 MLP 参数 (q_mlp/c_mlp)！")
-            print(f"Checkpoint 里的 key 样例: {keys_in_ckpt[0]}")
-            print("如果这是旧的 Linear Checkpoint，请重新训练，否则效果会很差。\n")
-
-        # 动态调整 embedding 大小
-        if "fixed_centroids.weight" in indexer_state:
-            num_nodes = indexer_state["fixed_centroids.weight"].shape[0]
-            self.indexer.fixed_centroids = nn.Embedding(num_nodes, EMBEDDING_DIM).to(DEVICE)
-
-        # 加载参数 (现在 inference.py 和 model.py 结构一致，应该能完美加载)
-        self.indexer.load_state_dict(indexer_state, strict=False)
-        print("Indexer weights loaded.")
-
-        self.encoder.eval()
-        self.indexer.eval()
-        self.scale = self.indexer.logit_scale.exp().clamp(max=100)
-        
-        self._load_tree()
-        self._load_leaf_docs()
-        self.doc_lookup = DocEmbeddingLookup(MEMMAP_PATH, ID2INDEX_PATH)
-
-    def _load_tree(self):
-        print("Loading tree structure...")
-        with open(config.CHILDREN_EMBEDDINGS_PATH, "rb") as f:
-            children = pickle.load(f)
+                    self.docid2idx[parts[0]] = int(parts[1])
+                    self.idx2docid[int(parts[1])] = parts[0]
+        with open(config.ID2PATH, "rb") as f: m = pickle.load(f)
+        self.leaf_to_offsets = defaultdict(list)
+        for doc_id_str, paths in m.items():
+            if len(paths) > 0 and isinstance(paths[0], int): paths = [paths]
+            offset = self.docid2idx.get(doc_id_str)
+            if offset is not None:
+                for p in paths: self.leaf_to_offsets[p[-1]].append(offset)
+        for k in self.leaf_to_offsets: self.leaf_to_offsets[k] = np.array(self.leaf_to_offsets[k], dtype=np.int64)
+        with open(config.CHILDREN_EMBEDDINGS_PATH, "rb") as f: children = pickle.load(f)
         max_id = 0
         for p, cs in children.items():
             max_id = max(max_id, p)
             for c in cs: max_id = max(max_id, c["child_id"])
-        
         self.pad = max_id + 1
         adj = torch.full((self.pad + 1, NODE_BALANCE), self.pad, dtype=torch.long)
         for p, cs in children.items():
             for i, c in enumerate(sorted(cs, key=lambda x: x["child_index"])):
                 if i < NODE_BALANCE: adj[p, i] = c["child_id"]
-        self.indexer.adjacency = adj.to(DEVICE)
+        self.adjacency = adj.to(DEVICE)
 
-    def _load_leaf_docs(self):
-        print("Loading leaf mappings...")
-        with open(config.ID2PATH, "rb") as f:
-            m = pickle.load(f)
-        self.leaf_docs = defaultdict(list)
-        for d, paths in m.items():
-            # 兼容处理
-            if len(paths) > 0 and isinstance(paths[0], int): paths = [paths]
-            for p in paths:
-                self.leaf_docs[p[-1]].append(d)
+class NeuralRetriever:
+    def __init__(self, resources, model_path):
+        ckpt = torch.load(model_path, map_location=DEVICE)
+        self.encoder = Encoder(BASE_MODEL_PATH).to(DEVICE)
+        self.indexer = Indexer().to(DEVICE)
+        self.encoder.load_state_dict(ckpt["encoder"], strict=False)
+        if "fixed_centroids.weight" in ckpt["indexer"]:
+            self.indexer.fixed_centroids = nn.Embedding(ckpt["indexer"]["fixed_centroids.weight"].shape[0], EMBEDDING_DIM).to(DEVICE)
+        self.indexer.load_state_dict(ckpt["indexer"], strict=False)
+        self.res = resources
+        self.indexer.adjacency = self.res.adjacency
+        self.scale = self.indexer.logit_scale.exp().clamp(max=100)
+        self.encoder.eval()
+        self.indexer.eval()
 
     def _layer_logits(self, q, parents, h):
-        """
-        q: [Batch, Dim]
-        parents: [Batch, Beam]
-        """
         B, K = parents.shape
         child = self.indexer.adjacency[parents.view(-1)].view(B, K, -1)
-        cent = self.indexer.fixed_centroids(child) # [B, K, NB, D]
-
-        # 调整 Query 维度: [B, K, 1, D]
-        # MLP 支持任意维度，只要最后一维是 Dim
-        q_expand = q[:, None, None, :].expand(B, K, 1, EMBEDDING_DIM)
-        
-        # 计算 MLP 相似度
-        scores = self.indexer.scorers[h - 1](q_expand, cent) # [B, K, NB]
-        
-        return child, (scores * self.scale)
+        cent = self.indexer.fixed_centroids(child)
+        return child, (self.indexer.scorers[h - 1](q[:, None, None, :].expand(B, K, 1, EMBEDDING_DIM), cent) * self.scale)
 
     @torch.no_grad()
-    def beam_search(self, q):
+    def beam_search(self, q, beam_size):
         B = q.size(0)
-        nodes = torch.zeros((B, BEAM_SIZE), dtype=torch.long, device=DEVICE)
-        scores = torch.full((B, BEAM_SIZE), -1e9, device=DEVICE)
-        scores[:, 0] = 0 
-
+        nodes = torch.zeros((B, beam_size), dtype=torch.long, device=DEVICE)
+        scores = torch.full((B, beam_size), -1e9, device=DEVICE)
+        scores[:, 0] = 0
         for h in range(1, TREE_HEIGHT):
             child, logit = self._layer_logits(q, nodes, h)
-            lp = F.log_softmax(logit, -1)
-            total = scores.unsqueeze(-1) + lp
-            
-            flat_score = total.view(B, -1)
-            topk_s, topk_idx = flat_score.topk(BEAM_SIZE, -1)
-            
-            flat_child = child.view(B, -1)
-            nodes = flat_child.gather(1, topk_idx)
+            total = scores.unsqueeze(-1) + F.log_softmax(logit, -1)
+            topk_s, topk_idx = total.view(B, -1).topk(beam_size, -1)
+            nodes = child.view(B, -1).gather(1, topk_idx)
             scores = topk_s
         return nodes
 
     @torch.no_grad()
     def rerank(self, qids, q, leaf):
-        leaf = leaf.view(-1).cpu().numpy()
-        leaf = leaf[leaf != self.pad]
-
-        docs = []
-        for l in np.unique(leaf):
-            docs.extend(self.leaf_docs.get(l, []))
-        
-        # [多路径去重] 关键步骤
-        docs = list(set(docs))
-        
-        if not docs: return []
-        docids, dv = self.doc_lookup.get(docs)
-        if dv is None: return []
-
-        dv = dv.to(DEVICE)
-        score = torch.matmul(q, dv.T)
-        k = min(EVAL_TOPK, score.size(1))
-        v, i = score.topk(k, 1)
-
+        leaf_nodes = leaf.view(-1).cpu().numpy()
+        unique_leaves = np.unique(leaf_nodes[leaf_nodes != self.res.pad])
+        batch_offsets = np.concatenate([self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64)) for l in unique_leaves])
+        if len(batch_offsets) == 0: return []
+        batch_offsets = np.unique(batch_offsets)
+        cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
+        scores = torch.matmul(q, cand_embs.T)
+        k = min(EVAL_TOPK, scores.size(1))
+        top_vals, top_inds = scores.topk(k, dim=1)
+        top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
+        real_offsets = batch_offsets[top_inds]
         res = []
         for b, qid in enumerate(qids):
             for r in range(k):
-                res.append((qid, docids[i[b, r]], v[b, r].item()))
+                res.append((qid, self.res.idx2docid.get(real_offsets[b, r], str(real_offsets[b, r])), top_vals[b, r]))
         return res
+
+def load_qrels(qrels_path):
+    qrels = defaultdict(set)
+    if os.path.exists(qrels_path):
+        with open(qrels_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4 and int(parts[3]) > 0: qrels[parts[0]].add(parts[2])
+    return qrels
+
+def compute_metrics(qrels, run, k=100):
+    mrr_sum, recall_sum, checked = 0.0, 0.0, 0
+    for qid in sorted(list(qrels.keys())):
+        if qid not in run: 
+            checked += 1
+            continue
+        relevant = qrels[qid]
+        retrieved = [doc for doc, _ in run[qid][:k]]
+        mrr_sum += next((1.0 / (i + 1) for i, d in enumerate(retrieved) if d in relevant), 0.0)
+        recall_sum += sum(1 for d in retrieved if d in relevant) / len(relevant) if relevant else 0.0
+        checked += 1
+    return mrr_sum / checked if checked > 0 else 0.0, recall_sum / checked if checked > 0 else 0.0
 
 # ================= 主流程 =================
 def main():
+    qrels_data = load_qrels(QRELS_FILE)
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
-    dataset = QueryDataset(QUERY_PATH, tokenizer)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn)
+    dataloader = DataLoader(QueryDataset(QUERY_PATH, tokenizer), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn)
+    static_resources = StaticResources()
+    results_summary = []
 
-    retriever = NeuralRetriever(args.MODEL_PATH)
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(FINAL_OUTPUT_FILE), exist_ok=True)
 
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        for qids, ids, mask in tqdm(dataloader, desc="Inference"):
-            ids = ids.to(DEVICE)
-            mask = mask.to(DEVICE)
-            with torch.no_grad():
-                q = retriever.encoder(ids, mask)
-                leaf = retriever.beam_search(q)
-                res = retriever.rerank(qids, q, leaf)
-            for qid, did, s in res:
-                f.write(f"{qid}\tQ0\t{did}\t0\t{s:.6f}\tTreeSearch\n")
-    print("Done.")
+    # 1. 运行所有测试
+    for model_path in CHECKPOINT_LIST:
+        try:
+            retriever = NeuralRetriever(static_resources, model_path)
+            model_name = os.path.basename(model_path)
+            for beam_size in BEAM_SIZE_LIST:
+                all_results, total_time, total_queries = [], 0.0, 0
+                for qids, ids, mask in tqdm(dataloader, desc=f"{model_name} B={beam_size}", leave=False):
+                    ids, mask = ids.to(DEVICE), mask.to(DEVICE)
+                    if torch.cuda.is_available(): torch.cuda.synchronize()
+                    t0 = time.time()
+                    with torch.no_grad():
+                        q = retriever.encoder(ids, mask)
+                        leaf = retriever.beam_search(q, beam_size=beam_size)
+                        res = retriever.rerank(qids, q, leaf)
+                    if torch.cuda.is_available(): torch.cuda.synchronize()
+                    total_time += time.time() - t0
+                    total_queries += len(qids)
+                    all_results.extend(res)
+
+                aqt_ms = (total_time / total_queries * 1000) if total_queries > 0 else 0.0
+                
+                with open(FINAL_OUTPUT_FILE, "w", encoding="utf-8") as f:
+                    f.writelines([f"{qid}\tQ0\t{did}\t0\t{s:.6f}\tTreeSearch\n" for qid, did, s in all_results])
+                
+                run_data = defaultdict(list)
+                for qid, did, s in all_results: run_data[qid].append((did, s))
+                for qid in run_data: run_data[qid].sort(key=lambda x: x[1], reverse=True)
+                
+                mrr, recall = compute_metrics(qrels_data, run_data, k=100)
+                results_summary.append({"Model": model_name, "Beam": beam_size, "MRR": mrr, "R": recall, "AQT": aqt_ms})
+                print(f"{model_name} B={beam_size} | MRR: {mrr:.4f} | R: {recall:.4f} | AQT: {aqt_ms:.2f} ms")
+        except Exception as e:
+            print(f"Error {model_path}: {e}")
+
+    # 2. 打印完整报告
+    print("\n" + "="*65)
+    print(f"{'FINAL EVALUATION REPORT':^65}")
+    print("="*65)
+    print(f"{'Model':<30} | {'Beam':<5} | {'MRR@100':<8} | {'R@100':<8} | {'AQT (ms)':<10}")
+    print("-" * 65)
+    for res in results_summary:
+        print(f"{res['Model']:<30} | {res['Beam']:<5} | {res['MRR']:.4f}   | {res['R']:.4f}   | {res['AQT']:<10.2f}")
+    print("-" * 65)
+
+    # 3. [新增] 打印每个 Beam Size 下表现最好(MRR最高)的 Checkpoint
+    print("\n" + "="*65)
+    print(f"{'BEST CHECKPOINT PER BEAM SIZE (Sorted by MRR)':^65}")
+    print("="*65)
+    print(f"{'Beam':<5} | {'Best Model':<30} | {'MRR':<8} | {'R':<8} | {'AQT':<10}")
+    print("-" * 65)
+    
+    # 按 Beam Size 分组寻找最佳
+    beam_groups = defaultdict(list)
+    for res in results_summary:
+        beam_groups[res['Beam']].append(res)
+    
+    for beam in sorted(beam_groups.keys()):
+        # 依据 MRR 选出最大的
+        best_run = max(beam_groups[beam], key=lambda x: x['MRR'])
+        print(f"{best_run['Beam']:<5} | {best_run['Model']:<30} | {best_run['MRR']:.4f}   | {best_run['R']:.4f}   | {best_run['AQT']:<10.2f}")
+    print("-" * 65)
 
 if __name__ == "__main__":
     main()
