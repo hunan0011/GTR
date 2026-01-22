@@ -7,44 +7,48 @@ import config
 import numpy as np
 
 # =================================================================
-# [修改] 升级 Similarity：从单层 Linear 改为 MLP
+# [修改] Similarity：Pro 优化版 (Pre-LN + 升维 + 残差)，去掉了零初始化
 # =================================================================
 class Similarity(nn.Module):
-    def __init__(self, input_dim, dropout=0.1):
+    def __init__(self, input_dim, dropout=0.1, expansion_factor=2):
         super().__init__()
-        
-        # 定义 MLP 结构：Linear -> LayerNorm -> GELU -> Linear
-        # 这增加了非线性，使模型能更好地将 query 和 candidate 映射到共同空间
+        hidden_dim = int(input_dim * expansion_factor)
+
         self.q_mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.LayerNorm(input_dim),
+            nn.LayerNorm(input_dim),            # 1. Pre-Norm: 放在最前面
+            nn.Linear(input_dim, hidden_dim),   # 2. 升维 (Expansion)
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(input_dim, input_dim)
+            nn.Linear(hidden_dim, input_dim)    # 3. 降维 (Projection)
         )
         
         self.c_mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
             nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(input_dim, input_dim)
+            nn.Linear(hidden_dim, input_dim)
         )
+        
 
     def forward(self, query, candidates):
         """
         query: [Batch, Dim]
         candidates: [Batch, Num_Candidates, Dim]
         """
-        # 1. MLP 投影 (非线性变换)
-        q = self.q_mlp(query)        # [Batch, Dim]
-        c = self.c_mlp(candidates)   # [Batch, Num_Candidates, Dim]
+        # --- 1. 残差连接 (Residual Connection) ---
+        q_delta = self.q_mlp(query)
+        q_refined = query + q_delta  
         
-        # 2. 扩展维度以便广播: [Batch, 1, Dim] * [Batch, K, Dim]
-        q = q.unsqueeze(1)
+        c_delta = self.c_mlp(candidates)
+        c_refined = candidates + c_delta 
         
-        # 3. 点积相似度: Sum(q * c) -> [Batch, Num_Candidates]
-        scores = torch.sum(q * c, dim=-1)
+        # --- 2. 归一化 (F.normalize) ---
+        q_refined = F.normalize(q_refined, p=2, dim=-1)
+        c_refined = F.normalize(c_refined, p=2, dim=-1)
+        
+        # --- 3. 点积相似度 ---
+        scores = torch.sum(q_refined.unsqueeze(1) * c_refined, dim=-1)
         
         return scores
 
@@ -103,9 +107,8 @@ class Indexer(nn.Module):
         self.fixed_centroids.weight.data.copy_(F.normalize(init_weights, p=2, dim=1))
         self.fixed_centroids.weight.requires_grad = False 
         
-        # 实例化 MLP 版 Similarity
         self.scorers = nn.ModuleList([
-            Similarity(input_dim=dim)
+            Similarity(input_dim=dim, expansion_factor=2) # 使用 2 倍升维
             for _ in range(self.H) 
         ])
         
@@ -133,7 +136,7 @@ class Indexer(nn.Module):
             
             current_scorer = self.scorers[h-1]
             
-            # 直接传入 query [B, Dim]，Similarity 内部会处理维度和 MLP
+            # 直接传入 query [B, Dim]
             raw_logits = current_scorer(query_embeddings, child_anchors)
             logits = raw_logits * l_scale
             

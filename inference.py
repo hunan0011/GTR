@@ -12,6 +12,11 @@ from transformers import AutoTokenizer, AutoConfig, AutoModel
 from collections import defaultdict
 import config
 
+# =========================================================
+# 【修改 1】直接从 model.py 导入定义，保证结构和参数完全一致
+# =========================================================
+from model import Similarity, Encoder, Indexer
+
 # ================= 配置 =================
 BEAM_SIZE_LIST = [10, 20, 30, 40, 50]
 CHECKPOINT_LIST = [
@@ -41,33 +46,9 @@ EMBEDDING_DIM = config.EMBEDDING_DIM
 TREE_HEIGHT = config.TREE_HEIGHT
 NODE_BALANCE = config.NODE_BALANCE
 QUERY_INSTRUCTION = "" 
-BATCH_SIZE = 128
+BATCH_SIZE = 1
 NUM_WORKERS = 4
 EVAL_TOPK = 100
-
-# ================= 模型 =================
-class Similarity(nn.Module):
-    def __init__(self, input_dim, dropout=0.1):
-        super().__init__()
-        self.q_mlp = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(input_dim, input_dim))
-        self.c_mlp = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(input_dim, input_dim))
-    def forward(self, query, candidates):
-        return torch.sum(self.q_mlp(query) * self.c_mlp(candidates), dim=-1)
-
-class Encoder(nn.Module):
-    def __init__(self, model_name):
-        super().__init__()
-        self.backbone = AutoModel.from_pretrained(model_name, config=AutoConfig.from_pretrained(model_name))
-    def forward(self, input_ids, attention_mask):
-        return F.normalize(self.backbone(input_ids=input_ids, attention_mask=attention_mask, return_dict=True).last_hidden_state[:, 0], dim=1)
-
-class Indexer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fixed_centroids = nn.Embedding(1, EMBEDDING_DIM)
-        self.scorers = nn.ModuleList([Similarity(EMBEDDING_DIM) for _ in range(TREE_HEIGHT)])
-        self.logit_scale = nn.Parameter(torch.tensor(np.log(20.0)))
-        self.adjacency = None
 
 # ================= 数据与资源 =================
 class QueryDataset(Dataset):
@@ -122,12 +103,24 @@ class StaticResources:
 class NeuralRetriever:
     def __init__(self, resources, model_path):
         ckpt = torch.load(model_path, map_location=DEVICE)
+        
+        # =========================================================
+        # 【修改 2】使用导入的类实例化，并传入必要的参数
+        # Indexer 现在需要 H (TREE_HEIGHT) 和 B (NODE_BALANCE)
+        # =========================================================
         self.encoder = Encoder(BASE_MODEL_PATH).to(DEVICE)
-        self.indexer = Indexer().to(DEVICE)
+        self.indexer = Indexer(H=TREE_HEIGHT, B=NODE_BALANCE).to(DEVICE)
+        
+        # 加载权重
         self.encoder.load_state_dict(ckpt["encoder"], strict=False)
+        
+        # 处理 Centroids (保持原逻辑，覆盖 pickle 加载的权重)
         if "fixed_centroids.weight" in ckpt["indexer"]:
-            self.indexer.fixed_centroids = nn.Embedding(ckpt["indexer"]["fixed_centroids.weight"].shape[0], EMBEDDING_DIM).to(DEVICE)
+            num_embeddings = ckpt["indexer"]["fixed_centroids.weight"].shape[0]
+            self.indexer.fixed_centroids = nn.Embedding(num_embeddings, EMBEDDING_DIM).to(DEVICE)
+            
         self.indexer.load_state_dict(ckpt["indexer"], strict=False)
+        
         self.res = resources
         self.indexer.adjacency = self.res.adjacency
         self.scale = self.indexer.logit_scale.exp().clamp(max=100)
@@ -138,7 +131,16 @@ class NeuralRetriever:
         B, K = parents.shape
         child = self.indexer.adjacency[parents.view(-1)].view(B, K, -1)
         cent = self.indexer.fixed_centroids(child)
-        return child, (self.indexer.scorers[h - 1](q[:, None, None, :].expand(B, K, 1, EMBEDDING_DIM), cent) * self.scale)
+        
+        # 使用 model.py 中的 forward 逻辑，它会自动处理残差和形状
+        # 注意：Indexer 中的 scorers 已经是 Similarity 实例了
+        # 我们只需要传入 query 和 child_centroids
+        
+        # q: [B, Dim] -> [B, Dim] (Similarity 内部会自动 unsqueeze)
+        # cent: [B, K, Dim]
+        scores = self.indexer.scorers[h - 1](q, cent)
+        
+        return child, scores * self.scale
 
     @torch.no_grad()
     def beam_search(self, q, beam_size):
@@ -238,6 +240,9 @@ def main():
                 results_summary.append({"Model": model_name, "Beam": beam_size, "MRR": mrr, "R": recall, "AQT": aqt_ms})
                 print(f"{model_name} B={beam_size} | MRR: {mrr:.4f} | R: {recall:.4f} | AQT: {aqt_ms:.2f} ms")
         except Exception as e:
+            # 打印详细错误信息，方便调试
+            import traceback
+            traceback.print_exc()
             print(f"Error {model_path}: {e}")
 
     # 2. 打印完整报告
@@ -250,20 +255,18 @@ def main():
         print(f"{res['Model']:<30} | {res['Beam']:<5} | {res['MRR']:.4f}   | {res['R']:.4f}   | {res['AQT']:<10.2f}")
     print("-" * 65)
 
-    # 3. [新增] 打印每个 Beam Size 下表现最好(MRR最高)的 Checkpoint
+    # 3. 打印最佳 Checkpoint
     print("\n" + "="*65)
     print(f"{'BEST CHECKPOINT PER BEAM SIZE (Sorted by MRR)':^65}")
     print("="*65)
     print(f"{'Beam':<5} | {'Best Model':<30} | {'MRR':<8} | {'R':<8} | {'AQT':<10}")
     print("-" * 65)
     
-    # 按 Beam Size 分组寻找最佳
     beam_groups = defaultdict(list)
     for res in results_summary:
         beam_groups[res['Beam']].append(res)
     
     for beam in sorted(beam_groups.keys()):
-        # 依据 MRR 选出最大的
         best_run = max(beam_groups[beam], key=lambda x: x['MRR'])
         print(f"{best_run['Beam']:<5} | {best_run['Model']:<30} | {best_run['MRR']:.4f}   | {best_run['R']:.4f}   | {best_run['AQT']:<10.2f}")
     print("-" * 65)

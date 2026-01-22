@@ -251,3 +251,9 @@ if __name__ == "__main__":
     save_object(leaf2docs, LEAF2ID)
 
     print(f"Soft-GMM Tree build finished ({DATA_TYPE} mode).")
+    total_tree_paths = 0
+    for docid, paths in docid2path.items():
+        total_tree_paths += len(paths)
+
+    print(f"GMM 建树后全量文档的总路径数：{total_tree_paths}")
+    print(f"GMM 建树后平均每个文档对应路径数：{total_tree_paths / len(docid2path):.2f}")
