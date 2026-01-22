@@ -28,11 +28,7 @@ CHECKPOINT_LIST = [
     "/home/jiangda/jiangyutao/Code/output/checkpoint-6.pt",
     "/home/jiangda/jiangyutao/Code/output/checkpoint-7.pt",
     "/home/jiangda/jiangyutao/Code/output/checkpoint-8.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-9.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-10.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-11.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-12.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-13.pt",
+
 ]
 QRELS_FILE = "/home/jiangda/jiangyutao/Code/passages/qrels.dev.small.tsv"
 FINAL_OUTPUT_FILE = os.path.join(config.OUTPUT_DIR, "latest_result.trec")
