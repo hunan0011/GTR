@@ -13,7 +13,9 @@ from collections import defaultdict
 import config
 
 # =========================================================
-# 【修改 1】直接从 model.py 导入定义，保证结构和参数完全一致
+# 【关键】直接从 model.py 导入定义
+# 这样无论你的 model.py 里的 Similarity 长什么样（点积版还是交互版）
+# 这里都能自动适配，不需要改代码。
 # =========================================================
 from model import Similarity, Encoder, Indexer
 
@@ -46,7 +48,7 @@ EMBEDDING_DIM = config.EMBEDDING_DIM
 TREE_HEIGHT = config.TREE_HEIGHT
 NODE_BALANCE = config.NODE_BALANCE
 QUERY_INSTRUCTION = "" 
-BATCH_SIZE = 1
+BATCH_SIZE = 128  # 【修改】恢复为 128，设为 1 推理太慢了
 NUM_WORKERS = 4
 EVAL_TOPK = 100
 
@@ -104,21 +106,20 @@ class NeuralRetriever:
     def __init__(self, resources, model_path):
         ckpt = torch.load(model_path, map_location=DEVICE)
         
-        # =========================================================
-        # 【修改 2】使用导入的类实例化，并传入必要的参数
-        # Indexer 现在需要 H (TREE_HEIGHT) 和 B (NODE_BALANCE)
-        # =========================================================
+        # 使用导入的类实例化，传入 model.py 中 Indexer 需要的参数
         self.encoder = Encoder(BASE_MODEL_PATH).to(DEVICE)
         self.indexer = Indexer(H=TREE_HEIGHT, B=NODE_BALANCE).to(DEVICE)
         
-        # 加载权重
+        # 加载 Encoder
         self.encoder.load_state_dict(ckpt["encoder"], strict=False)
         
-        # 处理 Centroids (保持原逻辑，覆盖 pickle 加载的权重)
+        # 处理 Centroids 
+        # (如果 checkpoint 里有 fixed_centroids，重新初始化 embedding 层以匹配大小)
         if "fixed_centroids.weight" in ckpt["indexer"]:
             num_embeddings = ckpt["indexer"]["fixed_centroids.weight"].shape[0]
             self.indexer.fixed_centroids = nn.Embedding(num_embeddings, EMBEDDING_DIM).to(DEVICE)
             
+        # 加载 Indexer (此时会自动加载里面的 scorers 权重)
         self.indexer.load_state_dict(ckpt["indexer"], strict=False)
         
         self.res = resources
@@ -132,12 +133,9 @@ class NeuralRetriever:
         child = self.indexer.adjacency[parents.view(-1)].view(B, K, -1)
         cent = self.indexer.fixed_centroids(child)
         
-        # 使用 model.py 中的 forward 逻辑，它会自动处理残差和形状
-        # 注意：Indexer 中的 scorers 已经是 Similarity 实例了
-        # 我们只需要传入 query 和 child_centroids
-        
-        # q: [B, Dim] -> [B, Dim] (Similarity 内部会自动 unsqueeze)
-        # cent: [B, K, Dim]
+        # 核心逻辑：直接调用 scorer
+        # 这里的 scorer 就是你在 model.py 定义的 Interaction MLP
+        # 它接收 (query, candidates) -> 返回 [B, K] 的分数
         scores = self.indexer.scorers[h - 1](q, cent)
         
         return child, scores * self.scale
@@ -164,7 +162,12 @@ class NeuralRetriever:
         if len(batch_offsets) == 0: return []
         batch_offsets = np.unique(batch_offsets)
         cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
+        
+        # 注意：这里 Rerank 依然使用点积 (matmul)。
+        # 如果你的 Similarity MLP 学习到的特征空间与原始点积差异极大，这里可能效果一般。
+        # 但通常作为 Tree Retrieval 的后处理，直接点积是可以接受的 baseline。
         scores = torch.matmul(q, cand_embs.T)
+        
         k = min(EVAL_TOPK, scores.size(1))
         top_vals, top_inds = scores.topk(k, dim=1)
         top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
@@ -240,7 +243,6 @@ def main():
                 results_summary.append({"Model": model_name, "Beam": beam_size, "MRR": mrr, "R": recall, "AQT": aqt_ms})
                 print(f"{model_name} B={beam_size} | MRR: {mrr:.4f} | R: {recall:.4f} | AQT: {aqt_ms:.2f} ms")
         except Exception as e:
-            # 打印详细错误信息，方便调试
             import traceback
             traceback.print_exc()
             print(f"Error {model_path}: {e}")

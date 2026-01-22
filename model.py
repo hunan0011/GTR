@@ -7,50 +7,53 @@ import config
 import numpy as np
 
 # =================================================================
-# [修改] Similarity：Pro 优化版 (Pre-LN + 升维 + 残差)，去掉了零初始化
+# [修改] Similarity：使用你提供的 4倍维度拼接 + MLP 交互结构
 # =================================================================
 class Similarity(nn.Module):
-    def __init__(self, input_dim, dropout=0.1, expansion_factor=2):
+    def __init__(self, input_dim, hidden_dim=512, dropout=0.1):
         super().__init__()
-        hidden_dim = int(input_dim * expansion_factor)
 
-        self.q_mlp = nn.Sequential(
-            nn.LayerNorm(input_dim),            # 1. Pre-Norm: 放在最前面
-            nn.Linear(input_dim, hidden_dim),   # 2. 升维 (Expansion)
+        # 输入维度是 4 * input_dim (因为拼接了 q, c, q*c, |q-c|)
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(input_dim * 4),
+            nn.Linear(input_dim * 4, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, input_dim)    # 3. 降维 (Projection)
+            nn.Linear(hidden_dim, 1)
         )
-        
-        self.c_mlp = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, input_dim)
-        )
-        
 
     def forward(self, query, candidates):
         """
-        query: [Batch, Dim]
-        candidates: [Batch, Num_Candidates, Dim]
+        query:      [B, D]
+        candidates: [B, K, D]
+        return:     [B, K]
         """
-        # --- 1. 残差连接 (Residual Connection) ---
-        q_delta = self.q_mlp(query)
-        q_refined = query + q_delta  
-        
-        c_delta = self.c_mlp(candidates)
-        c_refined = candidates + c_delta 
-        
-        # --- 2. 归一化 (F.normalize) ---
-        q_refined = F.normalize(q_refined, p=2, dim=-1)
-        c_refined = F.normalize(c_refined, p=2, dim=-1)
-        
-        # --- 3. 点积相似度 ---
-        scores = torch.sum(q_refined.unsqueeze(1) * c_refined, dim=-1)
-        
+        B, K, D = candidates.shape
+
+        # 1️⃣ query 扩展到和 candidates 对齐
+        q = query.unsqueeze(1).expand(-1, K, -1)  # [B, K, D]
+
+        # 2️⃣ 构造 query–candidate 成对特征
+        # 这一步是核心：显式构造了交互特征
+        pair_feat = torch.cat(
+            [
+                q,                      # query 原始语义
+                candidates,             # child 原始语义
+                q * candidates,         # 逐维相似性 (Hadamard product)
+                torch.abs(q - candidates)  # 逐维差异 (Absolute difference)
+            ],
+            dim=-1
+        )  # 结果形状 [B, K, 4D]
+
+        # 3️⃣ MLP 直接输出分数
+        # 输出 [B, K, 1] -> squeeze -> [B, K]
+        scores = self.mlp(pair_feat).squeeze(-1)
+
         return scores
+
+# =================================================================
+# Encoder 和 Indexer 保持不变，Indexer 会自动兼容新的 Similarity
+# =================================================================
 
 class Encoder(nn.Module):
     def __init__(self, model_name: str, pooling: str = "mean", device: torch.device = None):
@@ -107,8 +110,10 @@ class Indexer(nn.Module):
         self.fixed_centroids.weight.data.copy_(F.normalize(init_weights, p=2, dim=1))
         self.fixed_centroids.weight.requires_grad = False 
         
+        # 实例化 Similarity
+        # 这里会自动调用新的 __init__，input_dim 传进去，hidden_dim 默认 512
         self.scorers = nn.ModuleList([
-            Similarity(input_dim=dim, expansion_factor=2) # 使用 2 倍升维
+            Similarity(input_dim=dim)
             for _ in range(self.H) 
         ])
         
@@ -136,8 +141,12 @@ class Indexer(nn.Module):
             
             current_scorer = self.scorers[h-1]
             
-            # 直接传入 query [B, Dim]
+            # 这里调用新的 forward，不再有点积操作，直接由 MLP 输出 scores
+            # raw_logits: [Batch, B]
             raw_logits = current_scorer(query_embeddings, child_anchors)
+            
+            # 注意：因为 MLP 输出的已经是一个标量分数，这里乘以 scale 依然适用
+            # 这相当于调节 Softmax 的温度
             logits = raw_logits * l_scale
             
             all_layer_logits.append(logits)
