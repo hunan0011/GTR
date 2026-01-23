@@ -160,21 +160,57 @@ class NeuralRetriever:
 
     @torch.no_grad()
     def rerank(self, qids, q, leaf):
-        leaf_nodes = leaf.view(-1).cpu().numpy()
-        unique_leaves = np.unique(leaf_nodes[leaf_nodes != self.res.pad])
-        batch_offsets = np.concatenate([self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64)) for l in unique_leaves])
-        if len(batch_offsets) == 0: return []
-        batch_offsets = np.unique(batch_offsets)
-        cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
-        scores = torch.matmul(q, cand_embs.T)
-        k = min(EVAL_TOPK, scores.size(1))
-        top_vals, top_inds = scores.topk(k, dim=1)
-        top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
-        real_offsets = batch_offsets[top_inds]
+        # 结果列表
         res = []
-        for b, qid in enumerate(qids):
+        
+        # 【修正逻辑】不再全量混合，而是遍历 Batch 中的每一个 Query 单独处理
+        # q: [Batch, Dim]
+        # leaf: [Batch, Beam_Size]
+        for i, qid in enumerate(qids):
+            # 1. 拿到当前这一个 Query 的叶子节点
+            my_leaves = leaf[i].cpu().numpy()
+            my_leaves = my_leaves[my_leaves != self.res.pad]
+            
+            # 2. 找到这些叶子节点下的文档 ID
+            if len(my_leaves) == 0:
+                continue
+                
+            my_offsets = np.concatenate([
+                self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64)) 
+                for l in my_leaves
+            ])
+            
+            if len(my_offsets) == 0:
+                continue
+                
+            # 去重：同一个 Query 不同的叶子可能指向同一个文档
+            my_offsets = np.unique(my_offsets)
+            
+            # 3. 只加载属于当前 Query 的候选文档
+            # [Num_My_Candidates, Dim]
+            my_cand_embs = torch.from_numpy(self.res.doc_embeddings[my_offsets]).to(DEVICE)
+            
+            # 4. 算分：只算当前 Query (q[i]) 和它自己的候选文档
+            # q[i]: [Dim] -> my_cand_embs.T: [Dim, Num] -> my_scores: [Num]
+            my_scores = torch.matmul(q[i], my_cand_embs.T)
+            
+            # 5. TopK 筛选
+            k = min(EVAL_TOPK, my_scores.size(0))
+            top_vals, top_inds = my_scores.topk(k)
+            
+            top_vals = top_vals.cpu().numpy()
+            top_inds = top_inds.cpu().numpy()
+            
+            # 映射回真实的文档 ID
+            real_offsets = my_offsets[top_inds]
+            
             for r in range(k):
-                res.append((qid, self.res.idx2docid.get(real_offsets[b, r], str(real_offsets[b, r])), top_vals[b, r]))
+                res.append((
+                    qid, 
+                    self.res.idx2docid.get(real_offsets[r], str(real_offsets[r])), 
+                    top_vals[r]
+                ))
+                
         return res
 
 def load_qrels(qrels_path):
