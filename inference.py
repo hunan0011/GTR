@@ -14,8 +14,6 @@ import config
 
 # =========================================================
 # 【关键】直接从 model.py 导入定义
-# 这样无论你的 model.py 里的 Similarity 长什么样（点积版还是交互版）
-# 这里都能自动适配，不需要改代码。
 # =========================================================
 from model import Similarity, Encoder, Indexer
 
@@ -48,7 +46,7 @@ EMBEDDING_DIM = config.EMBEDDING_DIM
 TREE_HEIGHT = config.TREE_HEIGHT
 NODE_BALANCE = config.NODE_BALANCE
 QUERY_INSTRUCTION = "" 
-BATCH_SIZE = 128  # 【修改】恢复为 128，设为 1 推理太慢了
+BATCH_SIZE = 128  # 【已恢复】保证推理速度
 NUM_WORKERS = 4
 EVAL_TOPK = 100
 
@@ -106,20 +104,15 @@ class NeuralRetriever:
     def __init__(self, resources, model_path):
         ckpt = torch.load(model_path, map_location=DEVICE)
         
-        # 使用导入的类实例化，传入 model.py 中 Indexer 需要的参数
         self.encoder = Encoder(BASE_MODEL_PATH).to(DEVICE)
         self.indexer = Indexer(H=TREE_HEIGHT, B=NODE_BALANCE).to(DEVICE)
         
-        # 加载 Encoder
         self.encoder.load_state_dict(ckpt["encoder"], strict=False)
         
-        # 处理 Centroids 
-        # (如果 checkpoint 里有 fixed_centroids，重新初始化 embedding 层以匹配大小)
         if "fixed_centroids.weight" in ckpt["indexer"]:
             num_embeddings = ckpt["indexer"]["fixed_centroids.weight"].shape[0]
             self.indexer.fixed_centroids = nn.Embedding(num_embeddings, EMBEDDING_DIM).to(DEVICE)
             
-        # 加载 Indexer (此时会自动加载里面的 scorers 权重)
         self.indexer.load_state_dict(ckpt["indexer"], strict=False)
         
         self.res = resources
@@ -130,13 +123,24 @@ class NeuralRetriever:
 
     def _layer_logits(self, q, parents, h):
         B, K = parents.shape
+        # child: [B, Beam, Node_Balance]
         child = self.indexer.adjacency[parents.view(-1)].view(B, K, -1)
+        # cent: [B, Beam, Node_Balance, Dim] -> 这是一个 4D 张量
         cent = self.indexer.fixed_centroids(child)
         
-        # 核心逻辑：直接调用 scorer
-        # 这里的 scorer 就是你在 model.py 定义的 Interaction MLP
-        # 它接收 (query, candidates) -> 返回 [B, K] 的分数
-        scores = self.indexer.scorers[h - 1](q, cent)
+        # =========================================================
+        # 【关键修正】处理维度不匹配问题
+        # 新的 Similarity 模型只接受 3D 输入 [B, Total_K, D]
+        # 必须把 (Beam, Node_Balance) 展平成一维
+        # =========================================================
+        B_dim, Beam_dim, N_dim, D_dim = cent.shape
+        cent_flat = cent.view(B_dim, Beam_dim * N_dim, D_dim)
+        
+        # 计算分数: 输出 [B, Beam * Node_Balance]
+        scores_flat = self.indexer.scorers[h - 1](q, cent_flat)
+        
+        # 变回原来的形状: [B, Beam, Node_Balance] 以配合 beam_search 逻辑
+        scores = scores_flat.view(B_dim, Beam_dim, N_dim)
         
         return child, scores * self.scale
 
@@ -162,12 +166,7 @@ class NeuralRetriever:
         if len(batch_offsets) == 0: return []
         batch_offsets = np.unique(batch_offsets)
         cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
-        
-        # 注意：这里 Rerank 依然使用点积 (matmul)。
-        # 如果你的 Similarity MLP 学习到的特征空间与原始点积差异极大，这里可能效果一般。
-        # 但通常作为 Tree Retrieval 的后处理，直接点积是可以接受的 baseline。
         scores = torch.matmul(q, cand_embs.T)
-        
         k = min(EVAL_TOPK, scores.size(1))
         top_vals, top_inds = scores.topk(k, dim=1)
         top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
@@ -210,7 +209,6 @@ def main():
 
     os.makedirs(os.path.dirname(FINAL_OUTPUT_FILE), exist_ok=True)
 
-    # 1. 运行所有测试
     for model_path in CHECKPOINT_LIST:
         try:
             retriever = NeuralRetriever(static_resources, model_path)
@@ -247,7 +245,6 @@ def main():
             traceback.print_exc()
             print(f"Error {model_path}: {e}")
 
-    # 2. 打印完整报告
     print("\n" + "="*65)
     print(f"{'FINAL EVALUATION REPORT':^65}")
     print("="*65)
@@ -257,7 +254,6 @@ def main():
         print(f"{res['Model']:<30} | {res['Beam']:<5} | {res['MRR']:.4f}   | {res['R']:.4f}   | {res['AQT']:<10.2f}")
     print("-" * 65)
 
-    # 3. 打印最佳 Checkpoint
     print("\n" + "="*65)
     print(f"{'BEST CHECKPOINT PER BEAM SIZE (Sorted by MRR)':^65}")
     print("="*65)
@@ -269,8 +265,9 @@ def main():
         beam_groups[res['Beam']].append(res)
     
     for beam in sorted(beam_groups.keys()):
-        best_run = max(beam_groups[beam], key=lambda x: x['MRR'])
-        print(f"{best_run['Beam']:<5} | {best_run['Model']:<30} | {best_run['MRR']:.4f}   | {best_run['R']:.4f}   | {best_run['AQT']:<10.2f}")
+        if beam_groups[beam]:
+            best_run = max(beam_groups[beam], key=lambda x: x['MRR'])
+            print(f"{best_run['Beam']:<5} | {best_run['Model']:<30} | {best_run['MRR']:.4f}   | {best_run['R']:.4f}   | {best_run['AQT']:<10.2f}")
     print("-" * 65)
 
 if __name__ == "__main__":
