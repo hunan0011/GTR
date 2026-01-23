@@ -154,22 +154,45 @@ class NeuralRetriever:
 
     @torch.no_grad()
     def rerank(self, qids, q, leaf):
-        leaf_nodes = leaf.view(-1).cpu().numpy()
-        unique_leaves = np.unique(leaf_nodes[leaf_nodes != self.res.pad])
-        batch_offsets = np.concatenate([self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64)) for l in unique_leaves])
-        if len(batch_offsets) == 0: return []
-        batch_offsets = np.unique(batch_offsets)
-        cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
-        scores = torch.matmul(q, cand_embs.T)
-        k = min(EVAL_TOPK, scores.size(1))
-        top_vals, top_inds = scores.topk(k, dim=1)
-        top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
-        real_offsets = batch_offsets[top_inds]
-        res = []
+        """
+        q:    [B, D]
+        leaf: [B, beam_size]
+        """
+        results = []
+
         for b, qid in enumerate(qids):
-            for r in range(k):
-                res.append((qid, self.res.idx2docid.get(real_offsets[b, r], str(real_offsets[b, r])), top_vals[b, r]))
-        return res
+            leaves = leaf[b].cpu().numpy()
+            leaves = leaves[leaves != self.res.pad]
+
+            if len(leaves) == 0:
+                continue
+
+            # 只取【当前 query】的候选文档
+            offsets = np.concatenate([
+                self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64))
+                for l in np.unique(leaves)
+            ])
+
+            if len(offsets) == 0:
+                continue
+
+            offsets = np.unique(offsets)
+            cand_embs = torch.from_numpy(
+                self.res.doc_embeddings[offsets]
+            ).to(q.device)
+
+            # 单 query 打分
+            scores = torch.matmul(q[b:b+1], cand_embs.T).squeeze(0)
+
+            k = min(EVAL_TOPK, scores.size(0))
+            top_vals, top_inds = scores.topk(k)
+
+            for s, idx in zip(top_vals.tolist(), top_inds.tolist()):
+                docid = self.res.idx2docid.get(offsets[idx], str(offsets[idx]))
+                results.append((qid, docid, s))
+
+        return results
+
 
 def load_qrels(qrels_path):
     qrels = defaultdict(set)
