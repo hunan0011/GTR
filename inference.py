@@ -156,22 +156,45 @@ class NeuralRetriever:
 
     @torch.no_grad()
     def rerank(self, qids, q, leaf):
-        leaf_nodes = leaf.view(-1).cpu().numpy()
-        unique_leaves = np.unique(leaf_nodes[leaf_nodes != self.res.pad])
-        batch_offsets = np.concatenate([self.res.leaf_to_offsets.get(l, np.array([], dtype=np.int64)) for l in unique_leaves])
-        if len(batch_offsets) == 0: return []
-        batch_offsets = np.unique(batch_offsets)
-        cand_embs = torch.from_numpy(self.res.doc_embeddings[batch_offsets]).to(DEVICE)
-        scores = torch.matmul(q, cand_embs.T)
-        k = min(EVAL_TOPK, scores.size(1))
-        top_vals, top_inds = scores.topk(k, dim=1)
-        top_vals, top_inds = top_vals.cpu().numpy(), top_inds.cpu().numpy()
-        real_offsets = batch_offsets[top_inds]
-        res = []
-        for b, qid in enumerate(qids):
-            for r in range(k):
-                res.append((qid, self.res.idx2docid.get(real_offsets[b, r], str(real_offsets[b, r])), top_vals[b, r]))
-        return res
+        results = []
+        leaf_nodes_batch = leaf.cpu().numpy()
+        for i, qid in enumerate(qids):
+            my_leaves = leaf_nodes_batch[i] 
+            doc_offsets = []
+            for l in my_leaves:
+                if l != self.res.pad:
+                    # 获取该叶子下的文档列表
+                    docs_in_leaf = self.res.leaf_to_offsets.get(l, [])
+                    if len(docs_in_leaf) > 0:
+                        doc_offsets.append(docs_in_leaf)
+            if not doc_offsets:
+                continue
+            doc_offsets = np.concatenate(doc_offsets)
+            doc_offsets = np.unique(doc_offsets)
+            
+            if len(doc_offsets) == 0:
+                continue
+            cand_embs_np = self.res.doc_embeddings[doc_offsets]
+            cand_embs = torch.from_numpy(cand_embs_np).to(DEVICE) # (Num_Candidates, Dim)
+            
+            curr_q_vec = q[i].unsqueeze(0)
+            
+            scores = torch.matmul(curr_q_vec, cand_embs.T).squeeze(0) 
+            
+            k = min(EVAL_TOPK, scores.size(0))
+            if k > 0:
+                top_vals, top_inds = scores.topk(k)
+                top_vals = top_vals.cpu().numpy()
+                top_inds = top_inds.cpu().numpy()
+                
+                # 6. 记录结果
+                for r in range(k):
+                    # 找回真实的文档 ID (String)
+                    real_doc_idx = doc_offsets[top_inds[r]]
+                    doc_id_str = self.res.idx2docid.get(real_doc_idx, str(real_doc_idx))
+                    results.append((qid, doc_id_str, top_vals[r]))
+                    
+        return results
 
 def load_qrels(qrels_path):
     qrels = defaultdict(set)
