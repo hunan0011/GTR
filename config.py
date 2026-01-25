@@ -5,7 +5,7 @@ ID2OFFSET = "/home/jiangda/jiangyutao/Code/msmarco-passages-bge_id2offset.tsv"
 EMBEDDING_DIM = 768
 NODE_BALANCE = 13
 TREE_HEIGHT = 5
-PROB_THRESHOLD = 0.077
+PROB_THRESHOLD = 0.039
 PROJECT_ROOT = "/home/jiangda/jiangyutao/Code"
 TREE_DIR = f"{PROJECT_ROOT}/tree/cluster_passages_tree"
 OUTPUT_TREE_PATH = f"{TREE_DIR}/gmtree.pkl"
@@ -43,7 +43,7 @@ MAX_CANDIDATES = 100   # beam search pool
 ROUTING_BEAM_SIZE = 20
 
 RESUME=True
-EPOCHS = 13
+EPOCHS = 10
 
 EVAL_TOPK = 100           # retrieve top 100 documents for eval
 DEV_DOC_TRAIN_QUERIES = "/home/jiangda/jiangyutao/Code/passages/queries.dev.small.tsv"
