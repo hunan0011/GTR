@@ -15,19 +15,19 @@ import config
 # ================= 配置 =================
 BEAM_SIZE_LIST = [10, 20, 30, 40, 50]
 CHECKPOINT_LIST = [
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-1.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-2.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-3.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-4.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-5.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-6.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-7.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-8.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-9.pt",
-    "/home/jiangda/jiangyutao/Code/output/checkpoint-10.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-1.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-2.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-3.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-4.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-5.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-6.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-7.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-8.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-9.pt",
+    "/home/power/jiangyutao/GTR/output/checkpoint-10.pt",
 
 ]
-QRELS_FILE = "/home/jiangda/jiangyutao/Code/passages/qrels.dev.small.tsv"
+QRELS_FILE = config.DEV_DOC_TRAIN_QRELS
 FINAL_OUTPUT_FILE = os.path.join(config.OUTPUT_DIR, "latest_result.trec")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

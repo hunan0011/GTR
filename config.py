@@ -1,29 +1,37 @@
+'''
+Author: “Mia” “welshcorgi@foxmail.com”
+Date: 2026-01-25 15:57:39
+LastEditors: “Mia” “welshcorgi@foxmail.com”
+LastEditTime: 2026-01-25 22:37:13
+FilePath: /jiangyutao/GTR/config.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
 import os
-DATA_TYPE = "passage"
-MEMMAP_PATH = "/home/jiangda/jiangyutao/Code/msmarco-passages-bge.memmap"
-ID2OFFSET = "/home/jiangda/jiangyutao/Code/msmarco-passages-bge_id2offset.tsv"
+DATA_TYPE = "doc"
+MEMMAP_PATH = "/home/power/jiangyutao/GTR/msmarco_docs_bge_embeddings.memmap"
+ID2OFFSET = "/home/power/jiangyutao/GTR/msmarco_docs_bge_id2offset.tsv"
 EMBEDDING_DIM = 768
-NODE_BALANCE = 13
+NODE_BALANCE = 10
 TREE_HEIGHT = 5
-PROB_THRESHOLD = 0.039
-PROJECT_ROOT = "/home/jiangda/jiangyutao/Code"
-TREE_DIR = f"{PROJECT_ROOT}/tree/cluster_passages_tree"
+PROB_THRESHOLD = 0.05
+PROJECT_ROOT = "/home/power/jiangyutao/GTR"
+TREE_DIR = f"{PROJECT_ROOT}/tree/cluster_docs_tree"
 OUTPUT_TREE_PATH = f"{TREE_DIR}/gmtree.pkl"
 CHILDREN_EMBEDDINGS_PATH = f"{TREE_DIR}/children_id_embeddings.pkl" 
-ID2PATH = f"{TREE_DIR}/passages_id2path.pkl" 
-LEAF2ID = f"{TREE_DIR}/leaf2passages.pkl"
+ID2PATH = f"{TREE_DIR}/docs_id2path.pkl" 
+LEAF2ID = f"{TREE_DIR}/leaf2docs.pkl"
 RANDOM_SEED = 42
 
 
 
 # TOP100_PATH = "/home/jiangda/jiangyutao/github/DRhard/data/doc/dataset/msmarco-doctrain-top100"
-DOC_TRAIN_QRELS = "/home/jiangda/jiangyutao/Code/passages/qrels.train.tsv"
-DOC_TRAIN_QUERIES = "/home/jiangda/jiangyutao/Code/passages/queries.train.cleaned.tsv"
-DOC_PATH = "/home/jiangda/jiangyutao/Code/passages/collection.tsv"
+DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/docs/msmarco-doctrain-qrels.tsv"
+DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/docs/msmarco-doctrain-queries.tsv"
+DOC_PATH = "/home/power/jiangyutao/GTR/docs/collection.tsv"
 # DOC_LOOKUP = "/home/jiangda/jiangyutao/github/DRhard/data/doc/dataset/msmarco-docs-lookup.tsv"
 OUTPUT_DIR = "./output"
 
-MODEL_NAME = "/home/jiangda/jiangyutao/Code/bge-base-en-v1.5"
+MODEL_NAME = "/home/power/jiangyutao/GTR/bge-base-en-v1.5"
 POOLING = "cls"                     # cls or mean
 MAX_SEQ_LEN = 512                   # you can change if needed
 
@@ -46,8 +54,8 @@ RESUME=True
 EPOCHS = 10
 
 EVAL_TOPK = 100           # retrieve top 100 documents for eval
-DEV_DOC_TRAIN_QUERIES = "/home/jiangda/jiangyutao/Code/passages/queries.dev.small.tsv"
-DEV_DOC_TRAIN_QRELS = "/home/jiangda/jiangyutao/Code/passages/qrels.dev.small.tsv"
+DEV_DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/docs/msmarco-docdev-queries.tsv"
+DEV_DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/docs/msmarco-docdev-qrels.tsv"
 
 BIAS_NUM = 1              # number of bias heads in DAAB
 

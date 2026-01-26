@@ -169,10 +169,6 @@ def main():
         if (epoch + 1) % config.SAVE_INTERVAL == 0:
             save_path = os.path.join(config.OUTPUT_DIR, f"checkpoint-{epoch+1}.pt")
             save_model(encoder, indexer, optimizer, scheduler, epoch, save_path)
-
-    final_save_path = config.MODEL_SAVE_PATH
-    torch.save({'encoder': encoder.state_dict(), 'indexer': indexer.state_dict()}, final_save_path)
-    print(f"Training Complete. Final model saved to {final_save_path}")
     
 if __name__ == "__main__":
     main()
