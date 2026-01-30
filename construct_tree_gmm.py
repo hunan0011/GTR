@@ -61,7 +61,8 @@ def l2_normalize(x):
 class TreeNode:
     def __init__(self, node_id_str, embedding=None, layer=0):
         self.val = node_id_str
-        self.embedding = embedding
+        self.embedding = embedding      # Mean (Center)
+        self.variance = None            # 【新增】Variance
         self.layer = layer
         self.parent = None
         self.children = []
@@ -89,18 +90,18 @@ class TreeInitialize:
         N = X.shape[0]
         K = min(self.B, N)
         if K == 0:
-            return None, None, 0
+            return None, None, None, 0
 
         gmm = TorchGMM(
             num_components=K,
             covariance_type="diag",
             covariance_regularization=1e-6,
-            convergence_tolerance=1e-3,
+            convergence_tolerance=1e-4,
             batch_size=4096,
             trainer_params=dict(
                 accelerator="gpu",
                 devices=1,
-                max_epochs=200,
+                max_epochs=500,
                 enable_progress_bar=False,
                 logger=False
             )
@@ -108,9 +109,16 @@ class TreeInitialize:
 
         gmm.fit(X)
         probs = gmm.predict_proba(X).cpu().numpy()
+        
+        # 获取 Means 并归一化 (保持与原逻辑一致)
         centers = l2_normalize(gmm.model_.means.cpu().numpy())
+        
+        # 【新增】获取 Variances
+        # PyCave 的 covariances 存储在 model_.covariances 中
+        # 加上极小值防止数值问题，虽然 PyCave 内部已有 regularization
+        variances = gmm.model_.covariances.cpu().numpy() + 1e-9
 
-        return probs, centers, K
+        return probs, centers, variances, K
 
     def _build(self, node, X, pids, layer):
         print(f"Layer {layer}, Node {node.val}, Samples {len(pids)}")
@@ -121,7 +129,8 @@ class TreeInitialize:
             self.leaf_dict[node.val] = node
             return node
 
-        probs, centers, K = self._gmm(X)
+        # 【修改】接收 variances
+        probs, centers, variances, K = self._gmm(X)
 
         cluster_map = [[] for _ in range(K)]
         for i in range(len(pids)):
@@ -134,13 +143,19 @@ class TreeInitialize:
         for k in range(self.B):
             child_id = f"{node.val}_{k}"
             idxs = cluster_map[k] if k < K else []
+            
             if len(idxs) == 0:
+                # 空节点：继承父节点 embedding，方差设为默认值 (例如 1.0)
                 child = TreeNode(child_id, node.embedding, layer + 1)
+                child.variance = np.ones_like(node.embedding) # 【新增】默认方差
                 self._build(child, np.zeros((0, EMBEDDING_DIM), np.float32), np.array([], np.int64), layer + 1)
             else:
                 idxs = np.asarray(idxs)
+                # 正常节点：使用 GMM 计算出的 center 和 variance
                 child = TreeNode(child_id, centers[k], layer + 1)
+                child.variance = variances[k] # 【新增】存储方差
                 self._build(child, X[idxs], pids[idxs], layer + 1)
+            
             child.parent = node
             node.add(child)
 
@@ -148,7 +163,11 @@ class TreeInitialize:
 
     def clustering_tree(self):
         root = TreeNode("0", layer=0)
+        # 根节点均值
         root.embedding = l2_normalize(self.embeddings.mean(0, keepdims=True))[0]
+        # 根节点方差 (可以使用全局方差，这里简单设为 1)
+        root.variance = np.ones(EMBEDDING_DIM, dtype=np.float32)
+        
         self.root = self._build(root, self.embeddings, self.pids, 0)
         return self.root
 
@@ -171,7 +190,12 @@ def build_children_map(tree):
         n = q.pop(0)
         if not n.isleaf:
             mapping[n.node_id_int] = [
-                dict(child_id=c.node_id_int, child_index=i, embedding=c.embedding.tolist())
+                dict(
+                    child_id=c.node_id_int, 
+                    child_index=i, 
+                    embedding=c.embedding.tolist(),
+                    variance=c.variance.tolist() # 【新增】保存方差到字典
+                )
                 for i, c in enumerate(n.children)
             ]
             q.extend(n.children)
@@ -182,7 +206,7 @@ def build_docid_paths(tree, pid2docid):
     total = 0
 
     def dfs(node, path):
-        nonlocal total  # <--- 【关键修改】声明 total 为非局部变量
+        nonlocal total 
         
         cur = path + [node.node_id_int]
         if node.isleaf:
@@ -200,7 +224,7 @@ def build_docid_paths(tree, pid2docid):
             dfs(c, cur)
 
     dfs(tree.root, [])
-    print(f"Total paths generated: {total}") # 可以顺便打印一下总数
+    print(f"Total paths generated: {total}")
     return docid2path, leaf2docs
 
 # ==========================================================
@@ -214,24 +238,17 @@ if __name__ == "__main__":
     print(f"Data Type: {DATA_TYPE}")
     print(f"Loading IDs from {ID2OFFSET_PATH}...")
 
-    # 根据不同的类型执行不同的读取逻辑
     if DATA_TYPE == "doc":
-        # Document 格式: 有 explicit 的 'offset' 和 'docid' 列
         id_map = pd.read_csv(ID2OFFSET_PATH, sep="\t")
         pid2docid = dict(zip(id_map["offset"], id_map["docid"]))
-        
     elif DATA_TYPE == "passage":
-        # Passage 格式: 只有 'pid', 'passage' (有表头)
-        # 默认 Memmap 顺序对应行号 (Index) -> pid
         id_map = pd.read_csv(ID2OFFSET_PATH, sep="\t")
-        # index 是 offset (0, 1, 2...), pid 列是真实 ID
         pid2docid = dict(zip(id_map.index, id_map["pid"]))
 
     print(f"Loaded {len(pid2docid)} ID mappings.")
 
     X = np.memmap(MEMMAP_PATH, dtype=np.float32, mode="r").reshape(-1, EMBEDDING_DIM)
     
-    # 校验 Memmap 长度与 ID 数量
     if len(pid2docid) != X.shape[0]:
         print(f"[Warning] ID count ({len(pid2docid)}) != Memmap rows ({X.shape[0]}). Truncating to minimum.")
         valid_count = min(len(pid2docid), X.shape[0])
