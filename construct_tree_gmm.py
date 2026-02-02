@@ -96,7 +96,7 @@ class TreeInitialize:
             num_components=K,
             covariance_type="diag",
             covariance_regularization=1e-6,
-            convergence_tolerance=1e-4,
+            convergence_tolerance=1e-5,
             batch_size=4096,
             trainer_params=dict(
                 accelerator="gpu",

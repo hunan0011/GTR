@@ -32,7 +32,7 @@ CHECKPOINT_LIST = [
     "/home/power/jiangyutao/GTR/output/checkpoint-15.pt"
 ]
 QRELS_FILE = config.DEV_DOC_TRAIN_QRELS
-FINAL_OUTPUT_FILE = os.path.join(config.OUTPUT_DIR, "latest_result.trec")
+FINAL_OUTPUT_FILE = "latest_result.trec"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BASE_MODEL_PATH = config.MODEL_NAME
@@ -265,33 +265,35 @@ def main():
         except Exception as e:
             print(f"Error {model_path}: {e}")
 
-    # 2. 打印完整报告
-    print("\n" + "="*65)
-    print(f"{'FINAL EVALUATION REPORT':^65}")
-    print("="*65)
-    print(f"{'Model':<30} | {'Beam':<5} | {'MRR@100':<8} | {'R@100':<8} | {'AQT (ms)':<10}")
-    print("-" * 65)
-    for res in results_summary:
-        print(f"{res['Model']:<30} | {res['Beam']:<5} | {res['MRR']:.4f}   | {res['R']:.4f}   | {res['AQT']:<10.2f}")
-    print("-" * 65)
-
-    # 3. [新增] 打印每个 Beam Size 下表现最好(MRR最高)的 Checkpoint
-    print("\n" + "="*65)
-    print(f"{'BEST CHECKPOINT PER BEAM SIZE (Sorted by MRR)':^65}")
-    print("="*65)
-    print(f"{'Beam':<5} | {'Best Model':<30} | {'MRR':<8} | {'R':<8} | {'AQT':<10}")
-    print("-" * 65)
+    print("\n" + "="*100)
+    print(f"{'BEST PERFORMANCE PER BEAM SIZE (Independent Metrics)':^100}")
+    print("="*100)
+    print(f"{'Beam':<5} | {'Metric':<10} | {'Best Model':<30} | {'Best Value':<10} | {'Context (Other Metrics)'}")
+    print("-" * 100)
     
-    # 按 Beam Size 分组寻找最佳
+    # 按 Beam Size 分组
     beam_groups = defaultdict(list)
     for res in results_summary:
         beam_groups[res['Beam']].append(res)
     
     for beam in sorted(beam_groups.keys()):
-        # 依据 MRR 选出最大的
-        best_run = max(beam_groups[beam], key=lambda x: x['MRR'])
-        print(f"{best_run['Beam']:<5} | {best_run['Model']:<30} | {best_run['MRR']:.4f}   | {best_run['R']:.4f}   | {best_run['AQT']:<10.2f}")
-    print("-" * 65)
+        group = beam_groups[beam]
+        
+        # --- 核心修改：分别找出三项指标的最佳模型 ---
+        best_mrr_run   = max(group, key=lambda x: x['MRR'])  # MRR 越高越好
+        best_recall_run = max(group, key=lambda x: x['R'])    # Recall 越高越好
+        best_aqt_run   = min(group, key=lambda x: x['AQT'])  # AQT 越低(快)越好
+        
+        # 打印 MRR 最佳
+        print(f"{beam:<5} | {'Best MRR':<10} | {best_mrr_run['Model']:<30} | {best_mrr_run['MRR']:.4f}     | (R: {best_mrr_run['R']:.4f}, AQT: {best_mrr_run['AQT']:.2f} ms)")
+        
+        # 打印 Recall 最佳
+        print(f"{'':<5} | {'Best R':<10} | {best_recall_run['Model']:<30} | {best_recall_run['R']:.4f}     | (MRR: {best_recall_run['MRR']:.4f}, AQT: {best_recall_run['AQT']:.2f} ms)")
+        
+        # 打印 AQT 最快
+        print(f"{'':<5} | {'Fastest':<10} | {best_aqt_run['Model']:<30} | {best_aqt_run['AQT']:.2f} ms  | (MRR: {best_aqt_run['MRR']:.4f}, R: {best_aqt_run['R']:.4f})")
+        
+        print("-" * 100)
 
 if __name__ == "__main__":
     main()

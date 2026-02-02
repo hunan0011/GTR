@@ -62,7 +62,7 @@ def main():
     )
     
     doc_dataloader = DataLoader(
-        doc_vec_dataset, batch_size=config.BATCH_SIZE*2, 
+        doc_vec_dataset, batch_size=config.BATCH_SIZE*10, 
         shuffle=True, num_workers=4, collate_fn=doc_vector_collate_fn,
         pin_memory=True
     )
