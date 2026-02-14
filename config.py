@@ -2,18 +2,18 @@
 Author: “Mia” “welshcorgi@foxmail.com”
 Date: 2026-01-25 15:57:39
 LastEditors: “Mia” “welshcorgi@foxmail.com”
-LastEditTime: 2026-01-28 23:15:25
+LastEditTime: 2026-02-13 16:49:10
 FilePath: /jiangyutao/GTR/config.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
 import os
-DATA_TYPE = "doc"
-MEMMAP_PATH = "/home/power/jiangyutao/GTR/msmarco_docs_bge_embeddings.memmap"
-ID2OFFSET = "/home/power/jiangyutao/GTR/msmarco_docs_bge_id2offset.tsv"
+DATA_TYPE = "passage"
+MEMMAP_PATH = "/home/power/jiangyutao/GTR/msmarco-passages-bge.memmap"
+ID2OFFSET = "/home/power/jiangyutao/GTR/msmarco-passages-bge_id2offset.tsv"
 EMBEDDING_DIM = 768
-NODE_BALANCE = 10
+NODE_BALANCE = 13
 TREE_HEIGHT = 5
-PROB_THRESHOLD = 0.0075
+PROB_THRESHOLD = 0.077
 PROJECT_ROOT = "/home/power/jiangyutao/GTR"
 TREE_DIR = f"{PROJECT_ROOT}/tree/cluster_docs_tree"
 OUTPUT_TREE_PATH = f"{TREE_DIR}/gmtree.pkl"
@@ -25,9 +25,8 @@ RANDOM_SEED = 42
 
 
 # TOP100_PATH = "/home/jiangda/jiangyutao/github/DRhard/data/doc/dataset/msmarco-doctrain-top100"
-DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/docs/msmarco-doctrain-qrels.tsv"
-DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/docs/msmarco-doctrain-queries.tsv"
-DOC_PATH = "/home/power/jiangyutao/GTR/docs/collection.tsv"
+DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/passages/qrels.train.tsv"
+DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/passages/queries.train.cleaned.tsv"
 # DOC_LOOKUP = "/home/jiangda/jiangyutao/github/DRhard/data/doc/dataset/msmarco-docs-lookup.tsv"
 OUTPUT_DIR = "./output"
 
@@ -54,8 +53,8 @@ RESUME=True
 EPOCHS = 15
 
 EVAL_TOPK = 100           # retrieve top 100 documents for eval
-DEV_DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/docs/msmarco-docdev-queries.tsv"
-DEV_DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/docs/msmarco-docdev-qrels.tsv"
+DEV_DOC_TRAIN_QUERIES = "/home/power/jiangyutao/GTR/passages/queries.dev.small.tsv"
+DEV_DOC_TRAIN_QRELS = "/home/power/jiangyutao/GTR/passages/qrels.dev.small.tsv"
 
 BIAS_NUM = 1              # number of bias heads in DAAB
 

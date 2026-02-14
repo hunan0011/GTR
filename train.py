@@ -39,7 +39,6 @@ def main():
     dataset = MsMarcoDataset(
         queries_path=config.DOC_TRAIN_QUERIES, 
         qrels_path=config.DOC_TRAIN_QRELS,
-        docs_path=config.DOC_PATH, 
         docid2path_path=config.ID2PATH,
         leaf2docs_path=config.LEAF2ID,
         doc_embedding_path=config.MEMMAP_PATH,          

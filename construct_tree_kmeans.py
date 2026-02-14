@@ -1,9 +1,10 @@
-# construct_tree_kmeans_full.py
+# construct_tree_kmeans.py
 import os
 import pickle as pkl
 import numpy as np
 import pandas as pd
 import config as user_config
+import gc
 
 # --- 优先使用 cuML KMeans (GPU 加速) ---
 try:
@@ -16,14 +17,16 @@ except ImportError:
     USE_GPU = False
 
 # ---------------- CONFIG ----------------
+# [修改 1] 获取数据类型，默认为 doc
+DATA_TYPE = getattr(user_config, 'DATA_TYPE', 'passage')
+
 MEMMAP_PATH = user_config.MEMMAP_PATH
-ID2OFFSET_PATH = "/hdd02/jiangyutao/Code/msmarco_docs_bge_id2offset.tsv"
+ID2OFFSET_PATH = getattr(user_config, 'ID2OFFSET', "/hdd02/jiangyutao/Code/msmarco_docs_bge_id2offset.tsv")
 EMBEDDING_DIM = user_config.EMBEDDING_DIM
-NODE_BALANCE = user_config.NODE_BALANCE       # B
-TREE_HEIGHT = user_config.TREE_HEIGHT         # H
+NODE_BALANCE = user_config.NODE_BALANCE
+TREE_HEIGHT = user_config.TREE_HEIGHT
 
 TREE_DIR = user_config.TREE_DIR
-OUTPUT_TREE_PATH = user_config.OUTPUT_TREE_PATH
 CHILDREN_EMBEDDINGS_PATH = user_config.CHILDREN_EMBEDDINGS_PATH
 ID2PATH = user_config.ID2PATH
 LEAF2ID = getattr(user_config, 'LEAF2ID', f"{TREE_DIR}/leaf2docs.pkl")
@@ -31,12 +34,9 @@ LEAF2ID = getattr(user_config, 'LEAF2ID', f"{TREE_DIR}/leaf2docs.pkl")
 RANDOM_SEED = user_config.RANDOM_SEED
 
 # ==========================================================
-# 配置：文档向量不归一化，节点质心归一化（用于内积搜索）
+# 配置
 # ==========================================================
-NORMALIZE_INPUT = False       # 文档向量保持原始模长
-NORMALIZE_CENTROIDS = True    # 所有节点 embedding（质心）强制归一化
-
-print(f"Config: Raw Input Vectors + Normalized Centroids (for Inner Product Search)")
+print(f"Config: DATA_TYPE={DATA_TYPE} | Raw Input Vectors + Normalized Centroids")
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 np.random.seed(RANDOM_SEED)
@@ -48,12 +48,7 @@ def save_object(obj, path):
     with open(path, 'wb') as f:
         pkl.dump(obj, f)
 
-def load_object(path):
-    with open(path, 'rb') as f:
-        return pkl.load(f)
-
 def l2_normalize(arr):
-    """L2 归一化，支持 numpy array 或单向量"""
     if arr.shape[0] == 0:
         return arr
     norm = np.linalg.norm(arr, axis=1, keepdims=True)
@@ -66,7 +61,7 @@ def l2_normalize(arr):
 class TreeNode(object):
     def __init__(self, node_id_str, item_embedding=None, layer=None):
         self.val = node_id_str
-        self.embedding = item_embedding  # 单位向量
+        self.embedding = item_embedding
         self.parent = None
         self.children = []
         self.isleaf = False
@@ -82,8 +77,7 @@ class TreeNode(object):
 # ==========================================================
 class TreeInitialize(object):
     def __init__(self, pid_embeddings_raw, pids, blance_factor=NODE_BALANCE, tree_height=TREE_HEIGHT):
-        # 不对输入向量归一化，直接使用原始嵌入
-        self.embeddings = pid_embeddings_raw.astype(np.float32)  # memmap → readonly numpy
+        self.embeddings = pid_embeddings_raw
         self.pids = pids
         self.root = None
         self.blance_factor = blance_factor
@@ -97,30 +91,16 @@ class TreeInitialize(object):
         if K_actual <= 0:
             return None, None, 0
 
-        # 在原始向量上聚类（欧氏距离）
         if USE_GPU:
-            kmeans = cuMLKMeans(
-                n_clusters=K_actual,
-                max_iter=3000,
-                n_init=100,
-                random_state=RANDOM_SEED,
-                output_type='numpy'
-            )
+            kmeans = cuMLKMeans(n_clusters=K_actual, max_iter=3000, n_init=100, random_state=RANDOM_SEED, output_type='numpy')
             labels = kmeans.fit_predict(pid_embeddings)
             raw_centers = kmeans.cluster_centers_.astype(np.float32)
         else:
-            kmeans = KMeans(
-                n_clusters=K_actual,
-                max_iter=3000,
-                n_init=100,
-                random_state=RANDOM_SEED
-            )
+            kmeans = KMeans(n_clusters=K_actual, max_iter=3000, n_init=100, random_state=RANDOM_SEED)
             labels = kmeans.fit_predict(pid_embeddings)
             raw_centers = kmeans.cluster_centers_.astype(np.float32)
 
-        # 关键：质心强制归一化
         centers = l2_normalize(raw_centers)
-
         return labels, centers, K_actual
 
     def _build_full_tree(self, node, pid_embeddings, pids, layer):
@@ -145,13 +125,12 @@ class TreeInitialize(object):
             idx_list = cluster_map.get(slot, [])
 
             if len(idx_list) == 0:
-                # 空簇：继承父节点已归一化的 embedding
                 child = TreeNode(node_id_str=child_id_str, item_embedding=node.embedding, layer=layer + 1)
                 child.parent = node
                 self._build_full_tree(child, np.zeros((0, EMBEDDING_DIM), dtype=np.float32), np.array([], dtype=np.int64), layer + 1)
             else:
                 idx_array = np.array(idx_list, dtype=np.int64)
-                child_embedding = centers[slot]  # 已归一化
+                child_embedding = centers[slot]
                 child_pids_chunk = pid_embeddings[idx_array]
                 child_pids = pids[idx_array]
 
@@ -164,8 +143,6 @@ class TreeInitialize(object):
     def clustering_tree(self):
         print(f"\n===== Start building Tree (H={self.tree_height}, B={self.blance_factor}) =====")
         root = TreeNode('0', layer=0)
-
-        # 根节点：全局平均向量 → 归一化
         if self.embeddings.shape[0] > 0:
             if USE_GPU:
                 global_kmeans = cuMLKMeans(n_clusters=1, random_state=RANDOM_SEED, output_type='numpy')
@@ -210,7 +187,7 @@ def build_children_id_embedding_map(tree):
             children_info.append({
                 "child_id": ch.node_id_int,
                 "child_index": idx,
-                "embedding": ch.embedding.tolist()  # 单位向量
+                "embedding": ch.embedding.tolist()
             })
             q.append(ch)
         mapping[node.node_id_int] = children_info
@@ -232,6 +209,7 @@ def build_docid2path_and_leaf2docs(tree, pid_to_docid):
                 empty_leaves += 1
             cur_docs = []
             for pid in node.pids:
+                # [修改 3] 使用传入的 pid_to_docid 字典进行转换
                 if (did := pid_to_docid.get(pid)):
                     docid2path[did] = current_path
                     cur_docs.append(did)
@@ -251,27 +229,69 @@ if __name__ == '__main__':
     if TREE_HEIGHT < 1:
         raise ValueError("TREE_HEIGHT must be at least 1")
 
-    print(f"Loading ID mapping from {ID2OFFSET_PATH}...")
+    print(f"Loading ID mapping from {ID2OFFSET_PATH} (Mode: {DATA_TYPE})...")
     id_map = pd.read_csv(ID2OFFSET_PATH, sep='\t')
-    pid_to_docid = dict(zip(id_map['offset'], id_map['docid']))
+    
+    # [修改 2] 核心 ID 映射逻辑修复
+    pid_to_docid = {}
+    if DATA_TYPE == 'doc':
+        # Doc 模式：必须有 docid 列
+        if 'docid' in id_map.columns:
+            pid_to_docid = dict(zip(id_map['offset'], id_map['docid'].astype(str)))
+        else:
+            print("[Error] DATA_TYPE='doc' but 'docid' column not found in id2offset file!")
+            exit(1)
+            
+    elif DATA_TYPE == 'passage':
+        # Passage 模式：通常是 pid，或者没有 offset 列（行号即 offset）
+        target_col = 'pid' if 'pid' in id_map.columns else 'docid' # 尝试兼容
+        
+        if target_col not in id_map.columns:
+            print(f"[Error] DATA_TYPE='passage' but '{target_col}' column not found!")
+            print(f"Available columns: {id_map.columns}")
+            # 最后的 fallback: 假设第一列是 pid
+            if len(id_map.columns) >= 1:
+                print("Fallback: Using first column as PID.")
+                target_col = id_map.columns[0]
+            else:
+                exit(1)
+
+        # 检查是否有显式的 offset 列
+        if 'offset' in id_map.columns:
+             pid_to_docid = dict(zip(id_map['offset'], id_map[target_col].astype(str)))
+        else:
+             print("No 'offset' column found, using DataFrame index as offset.")
+             pid_to_docid = dict(zip(id_map.index, id_map[target_col].astype(str)))
+    
+    else:
+        print(f"[Error] Unknown DATA_TYPE: {DATA_TYPE}")
+        exit(1)
+
+    print(f"Loaded {len(pid_to_docid)} ID mappings.")
 
     print(f"Loading Memmap from {MEMMAP_PATH}...")
     pid_embeddings_raw = np.memmap(MEMMAP_PATH, dtype=np.float32, mode="r").reshape(-1, EMBEDDING_DIM)
+    
+    # 校验长度
+    max_offset = max(pid_to_docid.keys()) if pid_to_docid else 0
+    if max_offset >= pid_embeddings_raw.shape[0]:
+        print(f"[Warning] Max offset ({max_offset}) > Memmap rows ({pid_embeddings_raw.shape[0]}).")
+    
     pids_all = np.arange(pid_embeddings_raw.shape[0])
-    print(f"Total pid num: {len(pids_all)}")
+    print(f"Total pid num in Memmap: {len(pids_all)}")
 
     tree_initializer = TreeInitialize(
         pid_embeddings_raw, pids_all,
         blance_factor=NODE_BALANCE,
         tree_height=TREE_HEIGHT
     )
+    
+    # 1. 建树
     tree = tree_initializer.clustering_tree()
-
     tree_initializer.assign_node_ids()
 
-    print(f"Saving GMTree object to {OUTPUT_TREE_PATH}...")
-    save_object(tree_initializer, OUTPUT_TREE_PATH)
-
+    # 2. 生成必要的映射文件
+    print("--- Generating required auxiliary files ---")
     children_map = build_children_id_embedding_map(tree_initializer)
     save_object(children_map, CHILDREN_EMBEDDINGS_PATH)
     print(f"Saved children mapping to {CHILDREN_EMBEDDINGS_PATH}")
@@ -280,5 +300,3 @@ if __name__ == '__main__':
     save_object(docid2path_map, ID2PATH)
     save_object(leaf2docs_map, LEAF2ID)
     print(f"Saved mappings to {ID2PATH} and {LEAF2ID}")
-
-    print("All done (Raw document vectors + Normalized centroids for Inner Product Search).")

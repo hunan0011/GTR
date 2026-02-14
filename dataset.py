@@ -7,7 +7,7 @@ import pickle
 import tqdm
 
 class MsMarcoDataset(Dataset):
-    def __init__(self, queries_path, qrels_path, docs_path, docid2path_path, leaf2docs_path, 
+    def __init__(self, queries_path, qrels_path,  docid2path_path, leaf2docs_path, 
                  doc_embedding_path, docid_to_index_path, neg_num=1, embedding_dim=768):
         self.neg_num = neg_num
         
