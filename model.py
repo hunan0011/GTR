@@ -6,9 +6,6 @@ from transformers import AutoConfig, AutoModel
 import config
 import numpy as np
 
-# =================================================================
-# [修改] 升级 Similarity：从单层 Linear 改为 MLP
-# =================================================================
 class Similarity(nn.Module):
     def __init__(self, input_dim, dropout=0.1):
         super().__init__()
@@ -39,13 +36,13 @@ class Similarity(nn.Module):
         # 1. MLP 投影 (非线性变换)
         q = self.q_mlp(query)        # [Batch, Dim]
         c = self.c_mlp(candidates)   # [Batch, Num_Candidates, Dim]
-        
+        # print(candidates)
         # 2. 扩展维度以便广播: [Batch, 1, Dim] * [Batch, K, Dim]
         q = q.unsqueeze(1)
         
         # 3. 点积相似度: Sum(q * c) -> [Batch, Num_Candidates]
         scores = torch.sum(q * c, dim=-1)
-        
+        # print(scores)
         return scores
 
 class Encoder(nn.Module):

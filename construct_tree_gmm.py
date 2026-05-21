@@ -18,13 +18,13 @@ except ImportError:
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is required. CPU GMM is disabled.")
 
-print("Using PyCave GMM (GPU only)")
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
 print(f"Device: {torch.cuda.get_device_name(0)}")
 
 # ==========================================================
 #                       CONFIG
 # ==========================================================
-# [修改 1] 获取数据类型
 DATA_TYPE = getattr(config, 'DATA_TYPE', 'doc')
 
 MEMMAP_PATH = config.MEMMAP_PATH
@@ -103,7 +103,7 @@ class TreeInitialize:
             covariance_type="diag",
             covariance_regularization=1e-6,
             convergence_tolerance=1e-5,
-            batch_size=8152,
+            batch_size=8192, # [优化] 改成了更符合 GPU 缓存对齐的 8192
             trainer_params=dict(
                 accelerator="gpu",
                 devices=1,
@@ -113,10 +113,35 @@ class TreeInitialize:
             )
         )
 
-        gmm.fit(torch.from_numpy(X)) 
-        probs = gmm.predict_proba(torch.from_numpy(X)).cpu().numpy()
-        centers = l2_normalize(gmm.model_.means.cpu().numpy())
-        variances = gmm.model_.covariances.cpu().numpy() + 1e-9
+        # =================================================================
+        # [修改点] 拦截 NaN 并使用均值填充
+        # =================================================================
+        try:
+            gmm.fit(torch.from_numpy(X)) 
+            probs = gmm.predict_proba(torch.from_numpy(X)).cpu().numpy()
+            means_raw = gmm.model_.means.cpu().numpy()
+            vars_raw = gmm.model_.covariances.cpu().numpy()
+        except Exception:
+            # 如果底层发生报错，统一视为产生 NaN 处理
+            probs = np.full((N, K), np.nan)
+            means_raw = np.full((K, EMBEDDING_DIM), np.nan)
+            vars_raw = np.full((K, EMBEDDING_DIM), np.nan)
+
+        # 判断是否出现了 NaN
+        if np.isnan(means_raw).any() or np.isnan(vars_raw).any() or np.isnan(probs).any():
+            print(f"⚠️ [NaN Detected] 节点样本数 {N} 出现 NaN，已使用样本均值填充。")
+            probs = np.ones((N, K), dtype=np.float32) / K
+            
+            # 使用样本均值填充质心
+            fallback_mean = np.mean(X, axis=0)
+            means_raw = np.tile(fallback_mean, (K, 1))
+            
+            # 给定一个默认方差防止下游运算报错
+            vars_raw = np.ones((K, EMBEDDING_DIM), dtype=np.float32)
+        # =================================================================
+
+        centers = l2_normalize(means_raw)
+        variances = vars_raw + 1e-9
 
         return probs, centers, variances, K
 
@@ -131,13 +156,27 @@ class TreeInitialize:
 
         probs, centers, variances, K = self._gmm(X)
 
-        cluster_map = [[] for _ in range(K)]
-        for i in range(len(pids)):
-            idxs = np.where(probs[i] >= PROB_THRESHOLD)[0]
-            if len(idxs) == 0:
-                idxs = [np.argmax(probs[i])]
-            for k in idxs:
-                cluster_map[k].append(i)
+        cluster_map = [[] for _ in range(self.B)]
+        
+        # [优化 2] 彻底废弃慢速的 Python For 循环，使用 NumPy 向量化操作
+        if K > 0:
+            # 1. 生成所有样本是否大于阈值的布尔矩阵 (N, K)
+            mask = probs >= PROB_THRESHOLD
+            
+            # 2. 找出那些没有任何聚类概率大于阈值的样本 (Shape: N)
+            no_assignment_mask = ~mask.any(axis=1)
+            
+            # 3. 对这些“无归属”样本，找出它们概率最大的那个聚类索引
+            if no_assignment_mask.any():
+                # 获取最大的聚类索引
+                max_idxs = np.argmax(probs[no_assignment_mask], axis=1)
+                # 将这些位置的 mask 强制设为 True
+                row_idxs = np.where(no_assignment_mask)[0]
+                mask[row_idxs, max_idxs] = True
+            
+            # 4. 根据布尔矩阵将索引分发到对应的类别列表中
+            for k in range(K):
+                cluster_map[k] = np.where(mask[:, k])[0]
 
         for k in range(self.B):
             child_id = f"{node.val}_{k}"
@@ -197,7 +236,7 @@ def build_children_map(tree):
     return mapping
 
 def build_docid_paths(tree, pid2docid):
-    docid2path, leaf2docs = {}, {}
+    docid2path, leaf2docs = {} , {}
     total = 0
 
     def dfs(node, path):
@@ -231,7 +270,6 @@ if __name__ == "__main__":
     print(f"Loading IDs from {ID2OFFSET_PATH} (Mode: {DATA_TYPE})...")
     id_map = pd.read_csv(ID2OFFSET_PATH, sep="\t")
 
-    # [修改 2] 修复 KeyError: 'docid'
     pid2docid = {}
     
     if DATA_TYPE == "doc":
@@ -242,15 +280,12 @@ if __name__ == "__main__":
             exit(1)
             
     elif DATA_TYPE == "passage":
-        # 优先找 'pid'，其次找 'docid'
         target_col = 'pid' if 'pid' in id_map.columns else 'docid'
         
         if target_col not in id_map.columns:
-             # 如果连 pid 都没有，尝试 fallback 到第一列
              print(f"[Warn] Column '{target_col}' not found. Using first column as ID.")
              target_col = id_map.columns[0]
         
-        # 检查 offset
         if "offset" in id_map.columns:
             pid2docid = dict(zip(id_map["offset"], id_map[target_col].astype(str)))
         else:
@@ -289,6 +324,4 @@ if __name__ == "__main__":
     save_object(leaf2docs, LEAF2ID)
     print(f"Saved mappings to {ID2PATH} and {LEAF2ID}")
 
-    # 3. 不保存 gmtree.pkl
-    print("\nSkipping saving full tree object (gmtree.pkl).")
     print(f"Soft-GMM Tree build finished ({DATA_TYPE} mode).")
