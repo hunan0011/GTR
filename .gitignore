@@ -1,7 +1,11 @@
-# 忽略所有文件和文件夹
+# Ignore all files and folders by default
 *
 
-# 取消忽略你指定的核心代码文件
+# Keep Git metadata files
+!.gitignore
+!README.md
+
+# Keep core source files
 !config.py
 !construct_tree_gmm.py
 !dataset.py
@@ -10,7 +14,11 @@
 !model.py
 !train.py
 
-# 补充：常见需要忽略的文件（可选，不影响核心规则）
+# Keep scripts
+!scripts/
+!scripts/**
+
+# Ignore common temporary files
 __pycache__/
 *.pyc
 *.pyo
