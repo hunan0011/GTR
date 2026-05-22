@@ -13,6 +13,7 @@
 !losses.py
 !model.py
 !train.py
+!generate_embeddings.py
 
 # Keep scripts
 !scripts/

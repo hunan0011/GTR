@@ -36,7 +36,7 @@ After preparing the MS MARCO datasets and the BGE encoder, GTR can be executed i
 
 ### Embedding Preparation
 
-Before constructing the tree index, the raw MS MARCO queries and documents need to be encoded into dense vector representations using the BGE encoder. The generated embeddings are used as the input for GMM-based tree construction and later retrieval stages.
+Before constructing the tree index, encode the MS MARCO corpus into dense document embeddings using the BGE encoder:
 
 ```bash
 python generate_embeddings.py
