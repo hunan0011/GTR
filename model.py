@@ -10,8 +10,8 @@ class Similarity(nn.Module):
     def __init__(self, input_dim, dropout=0.1):
         super().__init__()
         
-        # 定义 MLP 结构：Linear -> LayerNorm -> GELU -> Linear
-        # 这增加了非线性，使模型能更好地将 query 和 candidate 映射到共同空间
+        # Define the MLP structure: Linear -> LayerNorm -> GELU -> Linear
+        # This introduces non-linearity and better maps queries and candidates into a shared space
         self.q_mlp = nn.Sequential(
             nn.Linear(input_dim, input_dim),
             nn.LayerNorm(input_dim),
@@ -33,14 +33,14 @@ class Similarity(nn.Module):
         query: [Batch, Dim]
         candidates: [Batch, Num_Candidates, Dim]
         """
-        # 1. MLP 投影 (非线性变换)
+        # 1. MLP projection (non-linear transformation)
         q = self.q_mlp(query)        # [Batch, Dim]
         c = self.c_mlp(candidates)   # [Batch, Num_Candidates, Dim]
         # print(candidates)
-        # 2. 扩展维度以便广播: [Batch, 1, Dim] * [Batch, K, Dim]
+        # 2. Expand the query dimension for broadcasting: [Batch, 1, Dim] * [Batch, K, Dim]
         q = q.unsqueeze(1)
         
-        # 3. 点积相似度: Sum(q * c) -> [Batch, Num_Candidates]
+        # 3. Dot-product similarity: Sum(q * c) -> [Batch, Num_Candidates]
         scores = torch.sum(q * c, dim=-1)
         # print(scores)
         return scores
@@ -100,7 +100,7 @@ class Indexer(nn.Module):
         self.fixed_centroids.weight.data.copy_(F.normalize(init_weights, p=2, dim=1))
         self.fixed_centroids.weight.requires_grad = False 
         
-        # 实例化 MLP 版 Similarity
+        # Instantiate the MLP-based similarity module
         self.scorers = nn.ModuleList([
             Similarity(input_dim=dim)
             for _ in range(self.H) 
@@ -130,7 +130,7 @@ class Indexer(nn.Module):
             
             current_scorer = self.scorers[h-1]
             
-            # 直接传入 query [B, Dim]，Similarity 内部会处理维度和 MLP
+            # Pass query [B, Dim] directly; Similarity handles dimension expansion and MLP projection internally
             raw_logits = current_scorer(query_embeddings, child_anchors)
             logits = raw_logits * l_scale
             

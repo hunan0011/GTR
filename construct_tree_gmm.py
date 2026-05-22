@@ -103,7 +103,7 @@ class TreeInitialize:
             covariance_type="diag",
             covariance_regularization=1e-6,
             convergence_tolerance=1e-5,
-            batch_size=8192, # [优化] 改成了更符合 GPU 缓存对齐的 8192
+            batch_size=8192, # [Optimization] Set to 8192 for better GPU cache alignment
             trainer_params=dict(
                 accelerator="gpu",
                 devices=1,
@@ -114,7 +114,7 @@ class TreeInitialize:
         )
 
         # =================================================================
-        # [修改点] 拦截 NaN 并使用均值填充
+        # [Modification] Catch NaN values and fall back to sample means
         # =================================================================
         try:
             gmm.fit(torch.from_numpy(X)) 
@@ -122,21 +122,21 @@ class TreeInitialize:
             means_raw = gmm.model_.means.cpu().numpy()
             vars_raw = gmm.model_.covariances.cpu().numpy()
         except Exception:
-            # 如果底层发生报错，统一视为产生 NaN 处理
+            # Treat backend failures as NaN cases
             probs = np.full((N, K), np.nan)
             means_raw = np.full((K, EMBEDDING_DIM), np.nan)
             vars_raw = np.full((K, EMBEDDING_DIM), np.nan)
 
-        # 判断是否出现了 NaN
+        # Check whether NaN values occur
         if np.isnan(means_raw).any() or np.isnan(vars_raw).any() or np.isnan(probs).any():
-            print(f"⚠️ [NaN Detected] 节点样本数 {N} 出现 NaN，已使用样本均值填充。")
+            print(f"[NaN Detected] Node with {N} samples produced NaN values; using the sample mean as fallback.")
             probs = np.ones((N, K), dtype=np.float32) / K
             
-            # 使用样本均值填充质心
+            # Use the sample mean as fallback centroids
             fallback_mean = np.mean(X, axis=0)
             means_raw = np.tile(fallback_mean, (K, 1))
             
-            # 给定一个默认方差防止下游运算报错
+            # Use default variance to avoid downstream errors
             vars_raw = np.ones((K, EMBEDDING_DIM), dtype=np.float32)
         # =================================================================
 
@@ -158,23 +158,23 @@ class TreeInitialize:
 
         cluster_map = [[] for _ in range(self.B)]
         
-        # [优化 2] 彻底废弃慢速的 Python For 循环，使用 NumPy 向量化操作
+        # [Optimization 2] Replace slow Python loops with NumPy vectorized operations
         if K > 0:
-            # 1. 生成所有样本是否大于阈值的布尔矩阵 (N, K)
+            # 1. Build the boolean assignment matrix for posterior probabilities above the threshold (N, K)
             mask = probs >= PROB_THRESHOLD
             
-            # 2. 找出那些没有任何聚类概率大于阈值的样本 (Shape: N)
+            # 2. Find samples with no cluster probability above the threshold (shape: N)
             no_assignment_mask = ~mask.any(axis=1)
             
-            # 3. 对这些“无归属”样本，找出它们概率最大的那个聚类索引
+            # 3. For unassigned samples, select the cluster with the maximum probability
             if no_assignment_mask.any():
-                # 获取最大的聚类索引
+                # Get the cluster indices with maximum probability
                 max_idxs = np.argmax(probs[no_assignment_mask], axis=1)
-                # 将这些位置的 mask 强制设为 True
+                # Force the corresponding mask positions to True
                 row_idxs = np.where(no_assignment_mask)[0]
                 mask[row_idxs, max_idxs] = True
             
-            # 4. 根据布尔矩阵将索引分发到对应的类别列表中
+            # 4. Assign sample indices to cluster lists according to the boolean matrix
             for k in range(K):
                 cluster_map[k] = np.where(mask[:, k])[0]
 
@@ -309,12 +309,12 @@ if __name__ == "__main__":
         pids = np.arange(len(X))
         X_view = X
 
-    # 1. 建树
+    # 1. Build the tree
     tree_init = TreeInitialize(X_view, pids, NODE_BALANCE, TREE_HEIGHT)
     tree = tree_init.clustering_tree()
     tree_init.assign_node_ids()
 
-    # 2. 生成必要的映射文件
+    # 2. Generate required mapping files
     print("--- Generating required auxiliary files ---")
     save_object(build_children_map(tree_init), CHILDREN_EMBEDDINGS_PATH)
     print(f"Saved children embeddings to {CHILDREN_EMBEDDINGS_PATH}")

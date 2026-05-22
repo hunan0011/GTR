@@ -1,5 +1,5 @@
 import os
-# ================= 严格限制底层单线程 =================
+# ================= Strictly restrict low-level libraries to a single thread =================
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -16,11 +16,11 @@ from collections import defaultdict
 import pytrec_eval
 import config
 
-# ================= 限制 CPU 线程池 =================
+# ================= Limit the CPU thread pool =================
 torch.set_num_threads(1) 
 numba.set_num_threads(1)
 
-# ================= 配置与常量 =================
+# ================= Configuration and constants =================
 BEAM_SIZE_LIST = [10, 20, 30, 40, 50]
 CHECKPOINTS = [f"./output/checkpoint-{i}.pt" for i in range(1, 16)]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,7 +34,7 @@ TREC_DATASETS = {
     "TREC_2020": {"query": config.TREC_QUERYS_20, "qrels": config.TREC_QUERL_20}
 }
 
-# ================= 模型组件 =================
+# ================= Model components =================
 class Similarity(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -59,7 +59,7 @@ class Indexer(nn.Module):
         self.scorers = nn.ModuleList([Similarity(dim) for _ in range(height)])
         self.logit_scale = nn.Parameter(torch.tensor(np.log(20.0)))
 
-# ================= 数据资源 =================
+# ================= Data resources =================
 class QueryDataset(Dataset):
     def __init__(self, queries, tokenizer):
         self.data = queries
@@ -74,7 +74,7 @@ class StaticResources:
     def __init__(self):
         print("Loading embeddings and trees...")
         
-        # ================== 核心优化点：消除磁盘 I/O 耗时 ==================
+        # ================== Key optimization: eliminate disk I/O overhead ==================
         print("Copying memmap to RAM (eliminating I/O overhead from AQT)...")
         memmap_view = np.memmap(config.MEMMAP_PATH, dtype='float32', mode='r').reshape(-1, config.EMBEDDING_DIM)
         self.doc_embeddings = np.array(memmap_view)
@@ -125,7 +125,7 @@ class StaticResources:
         self.max_offset = np.max(self.flat_offsets) if len(self.flat_offsets) > 0 else 0
         self.seen_array = np.zeros(self.max_offset + 1, dtype=np.int32)
 
-# ================= Numba 核心算法 =================
+# ================= Numba core algorithm =================
 @njit(fastmath=True, cache=True)
 def fast_beam_and_rerank(q_projs, cached_cents, adj, scale, beam_size,
                          leaf_bounds, flat_offsets, doc_embeddings, q_vec_raw,
@@ -208,7 +208,7 @@ def fast_beam_and_rerank(q_projs, cached_cents, adj, scale, beam_size,
 
     return out_offsets, out_scores
 
-# ================= 检索调用类 =================
+# ================= Retrieval wrapper =================
 class NeuralRetriever:
     def __init__(self, res, ckpt_path):
         ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -249,7 +249,7 @@ class NeuralRetriever:
         r_time = time.time() - t_start
         return [(qid_str, self.res.idx2docid.get(off), float(score)) for off, score in zip(out_offsets, out_scores)], r_time
 
-# ================= 评估辅助函数 =================
+# ================= Evaluation helper functions =================
 def evaluate_dev_metrics(qrels, run):
     mrr, recall = 0.0, 0.0
     for qid, rels in qrels.items():
@@ -259,13 +259,13 @@ def evaluate_dev_metrics(qrels, run):
         recall += sum(1 for d in retrieved if d in rels) / len(rels) if rels else 0.0
     return mrr / len(qrels), recall / len(qrels)
 
-# ================= 主函数 =================
+# ================= Main function =================
 def main():
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME)
     res = StaticResources()
     global_offset_buffer = np.empty(MAX_CANDIDATES, dtype=np.int64)
 
-    # 1. 准备 DEV 数据
+    # 1. Prepare DEV data
     dev_qrels = defaultdict(set)
     with open(config.DEV_QRELS, 'r') as f:
         for line in f:
@@ -276,7 +276,7 @@ def main():
         dev_queries = [(p[0], p[1]) for line in f if len(p := line.rstrip().split("\t")) >= 2]
     dev_loader = DataLoader(QueryDataset(dev_queries, tokenizer), batch_size=1, shuffle=False, num_workers=4)
 
-    # 2. 准备 TREC 数据
+    # 2. Prepare TREC data
     trec_meta = {}
     for ds_name, paths in TREC_DATASETS.items():
         qrels = defaultdict(dict)
@@ -296,11 +296,11 @@ def main():
         loader = DataLoader(QueryDataset(all_queries, tokenizer), batch_size=1, shuffle=False, num_workers=4)
         trec_meta[ds_name] = {"qrels": qrels, "loader": loader, "evaluator": evaluator}
 
-    # 记录字典
+    # Record dictionaries
     dev_beam_records = {b: [] for b in BEAM_SIZE_LIST}
     trec_best_scores = {ds_name: {b: {"ckpt": None, "ndcg": -1.0} for b in BEAM_SIZE_LIST} for ds_name in TREC_DATASETS}
 
-    # 3. 开始遍历 Checkpoints
+    # 3. Iterate over checkpoints
     for path in CHECKPOINTS:
         if not os.path.exists(path): continue
         ckpt_name = os.path.basename(path)
@@ -308,7 +308,7 @@ def main():
         retriever = NeuralRetriever(res, path)
         global_query_idx = 1 
 
-        # --- DEV 推理与评估 ---
+        # --- DEV inference and evaluation ---
         dev_all_res = {b: [] for b in BEAM_SIZE_LIST}
         dev_total_time = {b: 0.0 for b in BEAM_SIZE_LIST}
         dev_query_cnt = 0
@@ -332,7 +332,7 @@ def main():
                 global_query_idx += 1
             dev_query_cnt += 1
 
-        # ================= 新增：在终端实时打印 DEV 结果 =================
+        # ================= Print DEV results in real time =================
         dev_print_strs = []
         for b_size in BEAM_SIZE_LIST:
             run_data = defaultdict(list)
@@ -343,13 +343,13 @@ def main():
             aqt = dev_total_time[b_size] / dev_query_cnt * 1000
             dev_beam_records[b_size].append((mrr, rec, aqt))
             
-            # 格式化当前 Beam Size 的结果
+            # Format the results for the current beam size
             dev_print_strs.append(f"B={b_size}: MRR={mrr:.4f}, Rec={rec:.4f}, AQT={aqt:.1f}ms")
             
         print(f"[DEV_PASSAGE] Metrics: " + " | ".join(dev_print_strs))
         # =====================================================================
 
-        # --- TREC 推理与评估 ---
+        # --- TREC inference and evaluation ---
         for ds_name, meta in trec_meta.items():
             trec_all_res = {b: [] for b in BEAM_SIZE_LIST}
             for qid, ids, mask in tqdm(meta["loader"], desc=f"Evaluating {ds_name} ({ckpt_name})", leave=False):
@@ -364,7 +364,7 @@ def main():
                     trec_all_res[b_size].extend(batch_res)
                     global_query_idx += 1 
 
-            # 计算 TREC nDCG
+            # Compute TREC nDCG
             beam_ndcg_scores = []
             for b_size in BEAM_SIZE_LIST:
                 run_data = defaultdict(dict)
@@ -383,10 +383,10 @@ def main():
             print(f"[{ds_name}] nDCG@10: " + " | ".join([f"B={b}:{v:.4f}" for b, v in beam_ndcg_scores]))
 
 
-    # ================= 最终输出表格 =================
+    # ================= Final output tables =================
     final_output = "\n" + "="*70 + "\n🔥 FINAL EVALUATION RESULTS 🔥\n" + "="*70 + "\n"
 
-    # DEV 表格 (输出最佳 MRR/Recall 和 最优 AQT)
+    # DEV table: report the best MRR/Recall and the lowest AQT
     final_output += f"\n🏆 Dataset: DEV_PASSAGE (MRR, Recall, AQT)\n"
     final_output += "| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |\n"
     final_output += "| --------- | ------- | ---------- | ---------- |\n"
@@ -398,7 +398,7 @@ def main():
         best_aqt = min([x[2] for x in records]) 
         final_output += f"| {b_size:<9} | {best_mrr:.4f}  | {best_recall:.4f}     | {best_aqt:>6.2f}     |\n"
 
-    # TREC 表格 (输出最佳 nDCG 和对应权重名)
+    # TREC table: report the best nDCG and corresponding checkpoint
     for ds_name in TREC_DATASETS.keys():
         final_output += f"\n🏆 Dataset: {ds_name} (Best nDCG@10)\n"
         final_output += "| BEAM_SIZE | Best Checkpoint       | Best nDCG@10 |\n"
