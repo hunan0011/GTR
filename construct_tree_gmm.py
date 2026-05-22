@@ -25,7 +25,7 @@ print(f"Device: {torch.cuda.get_device_name(0)}")
 # ==========================================================
 #                       CONFIG
 # ==========================================================
-DATA_TYPE = getattr(config, 'DATA_TYPE', 'doc')
+DATA_TYPE = config.DATA_TYPE
 
 MEMMAP_PATH = config.MEMMAP_PATH
 ID2OFFSET_PATH = config.ID2OFFSET
