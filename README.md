@@ -1,197 +1,79 @@
-### construct_tree_kmeans.py
+# GTR: GMM-based Tree Indexing for End-to-End Dense Retrieval
 
-- children_id_embeddings.pkl
-  **结构说明**
-  - 外层字典的 key 是父节点的整数 ID（node_id_int）。
-  - 外层字典的 value 是一个长度为 NODE_BALANCE 的列表，表示该父节点的所有子节点信息。
-  - 每个子节点信息是一个字典，包含：
-    - "child_id"：子节点的整数 ID（node_id_int）。
-    - "child_index"：子节点在父节点中的顺序索引（0 到 B-1）。
-    - "embedding"：子节点的 embedding 向量，类型为 list[float]，长度为 EMBEDDING_DIM。
+## Introduction
 
-~~~ python
-{
-  0: [
-    {"child_id": 1, "child_index": 0, "embedding": [0.1, 0.2, ..., 0.123]},
-    {"child_id": 2, "child_index": 1, "embedding": [0.3, 0.4, ..., 0.456]},
-    ...
-  ],
-  1: [...],
-  ...
-}
-~~~
+To improve the robustness and efficiency of tree-based dense retrieval, we propose GTR, which stands for GMM-based Tree Indexing for end-to-end dense Retrieval. GTR aims to alleviate the irreversible routing errors caused by hard partitioning and the representation mismatch between query encoders and tree-based indexes. To achieve this goal, GTR replaces deterministic clustering with a GMM-based probabilistic tree, where documents are assigned to multiple semantic branches according to posterior probabilities. However, probabilistic indexing alone cannot fully address the discrepancy between dynamic query embeddings and static tree nodes. Therefore, we further design a Dual-MLP routing mechanism to project queries and index nodes into a shared routing space. Based on these components, GTR jointly optimizes the query encoder, tree index, and routing module in an end-to-end manner, leading to a more robust effectiveness-efficiency trade-off for large-scale dense retrieval.
 
-- docid2path.pkl
-  **结构说明**
-  - key 是文档的字符串 ID（即 docid）。
-  - value 是一个整数列表，表示该文档从根节点到叶节点的完整路径。
-  - 路径长度固定为 TREE_HEIGHT，包含根节点（ID 为 0）和叶节点。
+## Preparation
 
-~~~python
-{
-  "D123456": [0, 3, 7, 15, 31],
-  "D789012": [0, 1, 5, 12, 25],
-  ...
-}
-~~~
+GTR is evaluated on the MS MARCO Passage Ranking and Document Ranking datasets. The passage collection contains 8,841,823 passages, while the document collection contains 3,213,835 documents. We use [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) as the dense encoder backbone for generating query and document representations. The official MS MARCO download links are available from the [MS MARCO ranking dataset page](https://microsoft.github.io/msmarco/Datasets.html).
 
----
+### Dataset
 
-超参数影响：对于H，和B单选择，尽量保证泛化能力，要保证尽量每一个叶子结点下近可能平衡
+To download the required MS MARCO files, run:
 
-GMM建树平均文档路径数：MSMARCO Passage
+```bash
+bash scripts/download_msmarco.sh
+```
 
-| P_theshold | 比例大小 |
-| ---------- | -------- |
-| 原始       | 1        |
-| 0.077      | 1.16     |
-| 0.039      | 1.22     |
-| 0.0077      |          |
-| 0.00077      |          |
+### Encoder
 
-GMM建树平均文档路径数：MSMARCO Doc
+We use [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) as the dense encoder backbone. The model can be automatically downloaded through Hugging Face during embedding generation. It can also be downloaded manually by:
 
-| P_theshold | 比例大小 |
-| ---------- | -------- |
-| 原始       | 1        |
-| 0.1       | 1.12     |
-| 0.05      | 1.17     |
-| 0.01      |      |
-| 0.001     |      |
- 
-MSMARCO Passage H = 5 B = 13 k-mean :
+```bash
+pip install -U huggingface_hub
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        |         |            |            |
-| 20        |         |            |            |
-| 30        |         |            |            |
-| 40        |         |            |            |
-| 50        |         |            |            |
+huggingface-cli download BAAI/bge-base-en-v1.5 \
+  --local-dir ./models/bge-base-en-v1.5 \
+  --local-dir-use-symlinks False
+```
 
-MSMARCO Passage H = 5 B = 13 P_threshold = 0.077 :
+## Running GTR
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2853  |   0.6554   |    2.92    |
-| 20        | 0.3050  |   0.7219   |    3.05    |
-| 30        | 0.3136  |   0.7508   |    3.27    |
-| 40        | 0.3181  |   0.7679   |    3.33    |
-| 50        | 0.3217  |   0.7804   |    3.39    |
+### Pipeline Overview
 
-MSMARCO Passage H = 5 B = 13 P_threshold = 0.039 :
+After preparing the MS MARCO datasets and the BGE encoder, GTR can be executed in four main steps: **embedding preparation**, **GMM-based tree construction**, **end-to-end training**, and **inference**.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2851  | 0.6637     |            |
-| 20        | 0.3048  | 0.7214     |            |
-| 30        | 0.3146  | 0.7519     |            |
-| 40        | 0.3201  | 0.7694     |            |
-| 50        | 0.3235  | 0.7813     |            |
+### Embedding Preparation
 
-MSMARCO Passage H = 5 B = 13 P_threshold = 0.019 :
+Before constructing the tree index, the raw MS MARCO queries and documents need to be encoded into dense vector representations using the BGE encoder. The generated embeddings are used as the input for GMM-based tree construction and later retrieval stages.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        |         |            |            |
-| 20        |         |            |            |
-| 30        |         |            |            |
-| 40        |         |            |            |
-| 50        |         |            |            |
+```bash
+python generate_embeddings.py
+```
 
-MSMARCO Passage H = 5 B = 13 P_threshold = 0.010 :
+This step encodes the MS MARCO corpus into dense document embeddings and prepares the corresponding query embeddings for training and evaluation.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        |         |            |            |
-| 20        |         |            |            |
-| 30        |         |            |            |
-| 40        |         |            |            |
-| 50        |         |            |            |
+### Construct the GMM-based Tree Index
 
-MSMARCO Doc H = 5 B = 10  k-mean:
+After obtaining the document embeddings, construct the GMM-based probabilistic tree index:
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2894  | 0.6699     |   3.14     |
-| 20        | 0.3105  | 0.7352     |   3.23     |
-| 30        | 0.3209  | 0.7678     |   3.40     |
-| 40        | 0.3266  | 0.7872     |   3.55     |
-| 50        | 0.3294  | 0.8007     |   3.70     |
+```bash
+python construct_tree_gmm.py
+```
 
-MSMARCO Doc H = 5 B = 10 P_threshold = 0.1 :
+This step builds the hierarchical GMM-based tree structure and assigns documents to leaf buckets according to posterior probabilities.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2908  | 0.6803     |   3.14     |
-| 20        | 0.3122  | 0.7491     |   3.30     |
-| 30        | 0.3222  | 0.7845     |   3.52     |
-| 40        | 0.3283  | 0.8034     |   3.73     |
-| 50        | 0.3312  | 0.8138     |   3.94     |
+### Train GTR
 
-MSMARCO Doc H = 5 B = 10 P_threshold =0.05 :
+After the tree index has been constructed, train the GTR model with the joint optimization objective:
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2961  | 0.6867     |   3.19     |
-| 20        | 0.3175  | 0.7574     |   3.36     |
-| 30        | 0.3259  | 0.7876     |   3.59     |
-| 40        | 0.3319  | 0.8045     |   3.82     |
-| 50        | 0.3341  | 0.8159     |   4.04     |
+```bash
+python train.py
+```
 
-MSMARCO Doc H = 5 B = 10 P_threshold = 0.025:
+This step jointly optimizes the query encoder, tree node embeddings, and Dual-MLP routing module.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.3017  | 0.7009     |    3.20    |
-| 20        | 0.3192  | 0.7625     |    3.39    |
-| 30        | 0.3260  | 0.7878     |    3.62    |
-| 40        | 0.3312  | 0.8049     |    3.86    |
-| 50        | 0.3335  | 0.8182     |    4.10    |
+### Run Inference
 
-MSMARCO Doc H = 5 B = 10 P_threshold = 0.0125:
+Finally, run inference with the trained model and the constructed tree index:
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.2991  | 0.6963     |    3.21    |
-| 20        | 0.3180  | 0.7612     |    3.42    |
-| 30        | 0.3253  | 0.7920     |    3.68    |
-| 40        | 0.3303  | 0.8117     |    3.93    |
-| 50        | 0.3330  | 0.8223     |    4.19    |
+```bash
+python inference.py
+```
 
-MSMARCO Doc H = 5 B = 10 P_threshold = 0.00725:
+This step performs hierarchical beam search over the GMM-based tree index and generates the final retrieval results.
 
-| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |
-| --------- | ------- | ---------- | ---------- |
-| 10        | 0.3008  | 0.7052     |    3.24    |
-| 20        | 0.3185  | 0.7670     |    3.45    |
-| 30        | 0.3264  | 0.7965     |    3.73    |
-| 40        | 0.3306  | 0.8126     |    4.00    |
-| 50        | 0.3340  | 0.8240     |    4.28    |
----
+### Hyperparameter Configuration
 
-消融实验：
-
-| 方法             | MRR@100 | Recall@100 |
-| ---------------- | ------- | ---------- |
-| 普通聚类树       |         |            |
-| 端到端联合优化树 |         |            |
-| 传单聚类训练树   |         |            |
-| 本方法+MLP       |         |            |
-
----
-
-对比实验 MsMarco Doc Passage：
-
-| 方法    | Recall@100 | MRR@100 | AQT  |
-| ------- | ---------- | ------- | ---- |
-| IVFPQ   |            |         |      |
-| IVFFlat |            |         |      |
-| HNSW    |            |         |      |
-| ...     |            |         |      |
-| ...     |            |         |      |
-| JPQ     |            |         |      |
-| JTR     |            |         |      |
-
----
-
+To test the impact of different hyperparameter settings, modify the corresponding values in `config.py` before running the pipeline. 
