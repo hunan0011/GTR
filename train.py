@@ -37,8 +37,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME)
     
     dataset = MsMarcoDataset(
-        queries_path=config.DOC_TRAIN_QUERIES, 
-        qrels_path=config.DOC_TRAIN_QRELS,
+        queries_path=config.TRAIN_QUERIES, 
+        qrels_path=config.TRAIN_QRELS,
         docid2path_path=config.ID2PATH,
         leaf2docs_path=config.LEAF2ID,
         doc_embedding_path=config.MEMMAP_PATH,          

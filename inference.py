@@ -267,12 +267,12 @@ def main():
 
     # 1. 准备 DEV 数据
     dev_qrels = defaultdict(set)
-    with open(config.DEV_PASSAGE_QRELS, 'r') as f:
+    with open(config.DEV_QRELS, 'r') as f:
         for line in f:
             if len(p := line.strip().split()) >= 4 and int(p[3]) > 0: dev_qrels[p[0]].add(p[2])
         # print(f"Loaded DEV qrels: {len(dev_qrels)} queries with relevance judgments.")
     dev_queries = []
-    with open(config.DEV_PASSAGE_QUERYS, "r", encoding="utf-8") as f:
+    with open(config.DEV_QUERYS, "r", encoding="utf-8") as f:
         dev_queries = [(p[0], p[1]) for line in f if len(p := line.rstrip().split("\t")) >= 2]
     dev_loader = DataLoader(QueryDataset(dev_queries, tokenizer), batch_size=1, shuffle=False, num_workers=4)
 

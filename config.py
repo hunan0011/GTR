@@ -14,8 +14,8 @@ LEAF2ID = f"{TREE_DIR}/leaf2docs.pkl"
 
 RANDOM_SEED = 42
 
-DOC_TRAIN_QUERIES = "./data/msmarco/passage/queries.train.tsv"
-DOC_TRAIN_QRELS = "./data/msmarco/passage/qrels.train.tsv"
+TRAIN_QUERIES = "./data/msmarco/passage/queries.train.tsv"
+TRAIN_QRELS = "./data/msmarco/passage/qrels.train.tsv"
 
 OUTPUT_DIR = "./output"
 
@@ -27,7 +27,6 @@ LEARNING_RATE1 = 1e-5
 LEARNING_RATE2 = 5e-5
 WEIGHT_DECAY = 1e-3
 WARMUP_STEPS = 2000
-NUM_EPOCHS = 3
 GRAD_CLIP = 1.0
 
 SAVE_INTERVAL = 1
@@ -41,8 +40,8 @@ EPOCHS = 15
 
 EVAL_TOPK = 100                     # retrieve top 100 documents for eval
 
-DEV_PASSAGE_QUERYS = "./data/msmarco/passage/queries.dev.small.tsv"
-DEV_PASSAGE_QRELS = "./data/msmarco/passage/qrels.dev.tsv"
+DEV_QUERYS = "./data/msmarco/passage/queries.dev.small.tsv"
+DEV_QRELS = "./data/msmarco/passage/qrels.dev.tsv"
 
 TREC_QUERYS_20 = "./data/msmarco/passage/msmarco-pass-test2020-queries.tsv"
 TREC_QUERL_20 = "./data/msmarco/passage/2020qrels-pass.txt"
