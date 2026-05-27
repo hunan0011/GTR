@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# 1. Cross-entropy loss (unchanged)
+# Focal loss
 
 import torch
 import torch.nn as nn
@@ -19,15 +19,14 @@ class FocalLoss(nn.Module):
         target_log_probs = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
         pt = torch.exp(target_log_probs)
         
-        # Do not hard-clip confidence; let (1 - pt)^gamma handle it automatically
-        # Even when pt=0.9, (1 - 0.9)^2 = 0.01, so a small gradient is still retained for fine-grained adjustment
+        # Keep confidence unclipped so the focal weight controls the gradient.
         focal_weight = (1 - pt) ** self.gamma
         loss = -focal_weight * target_log_probs
 
         return loss.mean() if self.reduction == 'mean' else loss.sum()
     
 
-# 2. Triplet contrastive loss using dot-product similarity
+# Triplet contrastive loss using dot-product similarity
 class TripletContrastiveLoss(nn.Module):
     """
     Triplet loss based on dot-product similarity.
@@ -46,19 +45,14 @@ class TripletContrastiveLoss(nn.Module):
             pos_emb:   [Batch, Dim]
             neg_emb:   [Batch, Dim]
         """
-        # 1. Compute dot-product scores
-        # Multiply element-wise and sum along the vector dimension (dim=1)
-        # shape: [Batch]
+        # Compute dot-product scores.
         score_pos = torch.sum(query_emb * pos_emb, dim=1)
         score_neg = torch.sum(query_emb * neg_emb, dim=1)
         # print(score_pos, score_neg)
-        # 2. Compute the loss
-        # Desired condition: score_pos > score_neg + margin
-        # Violation degree: score_neg - score_pos + margin
+        # Penalize negatives that are too close to the positive score.
         # print(score_neg, score_pos)
         loss = torch.clamp(score_neg - score_pos + self.margin, min=0.0)
         
-        # 3. Return the mean loss
         return loss.mean()
 
 # losses.py
@@ -72,30 +66,24 @@ class InfoNCELoss(nn.Module):
         """
         query_emb: [Batch, Dim]
         pos_emb:   [Batch, Dim]
-        neg_emb:   [Batch, K, Dim]  <--- 支持多负例
+        neg_emb:   [Batch, K, Dim]
         logit_scale: scalar
         """
-        # 1. Positive scores (Batch, 1)
-        # (B, D) * (B, D) -> (B, 1)
+        # Positive scores: (B, D) * (B, D) -> (B, 1).
         scores_pos = torch.sum(query_emb * pos_emb, dim=-1, keepdim=True) * logit_scale
         
-        # 2. Negative scores (Batch, K)
-        # query_emb needs to be expanded to (B, 1, D)
-        # neg_emb: (B, K, D)
-        # result: (B, K)
+        # Negative scores: expand query_emb to (B, 1, D), then score (B, K, D).
         scores_neg = torch.sum(query_emb.unsqueeze(1) * neg_emb, dim=-1) * logit_scale
         
-        # 3. Concatenate logits (Batch, 1 + K)
-        # The positive sample is placed in column 0
+        # Put the positive sample in column 0.
         logits = torch.cat([scores_pos, scores_neg], dim=1)
         
-        # 4. The target is always 0
         targets = torch.zeros(logits.size(0), dtype=torch.long, device=logits.device)
         
         return self.cross_entropy(logits, targets)
 
 
-# 3. Knowledge distillation loss (unchanged)
+# Knowledge distillation loss
 class KnowledgeDistillationLoss(nn.Module):
     def __init__(self, temperature=1.0):
         super().__init__()

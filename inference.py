@@ -74,12 +74,11 @@ class StaticResources:
     def __init__(self):
         print("Loading embeddings and trees...")
         
-        # ================== Key optimization: eliminate disk I/O overhead ==================
-        print("Copying memmap to RAM (eliminating I/O overhead from AQT)...")
+        # Load the memmap into RAM to avoid repeated disk reads during scoring.
+        print("Loading document embeddings into RAM...")
         memmap_view = np.memmap(config.MEMMAP_PATH, dtype='float32', mode='r').reshape(-1, config.EMBEDDING_DIM)
         self.doc_embeddings = np.array(memmap_view)
-        print("Memmap successfully loaded into RAM.")
-        # =================================================================
+        print("Document embeddings loaded.")
         
         self.idx2docid, self.docid2idx = {}, {}
         with open(config.ID2OFFSET, "r") as f:
@@ -265,7 +264,7 @@ def main():
     res = StaticResources()
     global_offset_buffer = np.empty(MAX_CANDIDATES, dtype=np.int64)
 
-    # 1. Prepare DEV data
+    # Prepare DEV data.
     dev_qrels = defaultdict(set)
     with open(config.DEV_QRELS, 'r') as f:
         for line in f:
@@ -276,7 +275,7 @@ def main():
         dev_queries = [(p[0], p[1]) for line in f if len(p := line.rstrip().split("\t")) >= 2]
     dev_loader = DataLoader(QueryDataset(dev_queries, tokenizer), batch_size=1, shuffle=False, num_workers=4)
 
-    # 2. Prepare TREC data
+    # Prepare TREC data.
     trec_meta = {}
     for ds_name, paths in TREC_DATASETS.items():
         qrels = defaultdict(dict)
@@ -300,7 +299,7 @@ def main():
     dev_beam_records = {b: [] for b in BEAM_SIZE_LIST}
     trec_best_scores = {ds_name: {b: {"ckpt": None, "ndcg": -1.0} for b in BEAM_SIZE_LIST} for ds_name in TREC_DATASETS}
 
-    # 3. Iterate over checkpoints
+    # Iterate over checkpoints.
     for path in CHECKPOINTS:
         if not os.path.exists(path): continue
         ckpt_name = os.path.basename(path)
@@ -332,7 +331,7 @@ def main():
                 global_query_idx += 1
             dev_query_cnt += 1
 
-        # ================= Print DEV results in real time =================
+        # Print DEV results for the current checkpoint.
         dev_print_strs = []
         for b_size in BEAM_SIZE_LIST:
             run_data = defaultdict(list)
@@ -347,8 +346,6 @@ def main():
             dev_print_strs.append(f"B={b_size}: MRR={mrr:.4f}, Rec={rec:.4f}, AQT={aqt:.1f}ms")
             
         print(f"[DEV_PASSAGE] Metrics: " + " | ".join(dev_print_strs))
-        # =====================================================================
-
         # --- TREC inference and evaluation ---
         for ds_name, meta in trec_meta.items():
             trec_all_res = {b: [] for b in BEAM_SIZE_LIST}
@@ -384,10 +381,10 @@ def main():
 
 
     # ================= Final output tables =================
-    final_output = "\n" + "="*70 + "\n🔥 FINAL EVALUATION RESULTS 🔥\n" + "="*70 + "\n"
+    final_output = "\n" + "="*70 + "\nFINAL EVALUATION RESULTS\n" + "="*70 + "\n"
 
     # DEV table: report the best MRR/Recall and the lowest AQT
-    final_output += f"\n🏆 Dataset: DEV_PASSAGE (MRR, Recall, AQT)\n"
+    final_output += f"\nDataset: DEV_PASSAGE (MRR, Recall, AQT)\n"
     final_output += "| BEAM_SIZE | MRR@100 | Recall@100 | AQT (ms/q) |\n"
     final_output += "| --------- | ------- | ---------- | ---------- |\n"
     for b_size in BEAM_SIZE_LIST:
@@ -400,7 +397,7 @@ def main():
 
     # TREC table: report the best nDCG and corresponding checkpoint
     for ds_name in TREC_DATASETS.keys():
-        final_output += f"\n🏆 Dataset: {ds_name} (Best nDCG@10)\n"
+        final_output += f"\nDataset: {ds_name} (Best nDCG@10)\n"
         final_output += "| BEAM_SIZE | Best Checkpoint       | Best nDCG@10 |\n"
         final_output += "| --------- | --------------------- | ------------ |\n"
         for b_size in BEAM_SIZE_LIST:

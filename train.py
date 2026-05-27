@@ -32,7 +32,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
-    # 1. Datasets & Dataloaders
+    # Data loaders.
     print("Loading Datasets...")
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME)
     
@@ -67,7 +67,7 @@ def main():
     )
     doc_iterator = iter(doc_dataloader)
 
-    # 2. Models & Optimization
+    # Models and optimizer.
     encoder = Encoder(model_name=config.MODEL_NAME, pooling=config.POOLING, device=device)
     indexer = Indexer(H=config.TREE_HEIGHT, B=config.NODE_BALANCE, device=device).to(device)
     path_getter = GetTargetPaths(config.ID2PATH, config.CHILDREN_EMBEDDINGS_PATH)
@@ -85,7 +85,7 @@ def main():
     focal_loss_fn = FocalLoss(gamma=2.0).to(device)
     contrastive_loss_fn = InfoNCELoss().to(device)
 
-    # 3. Training Loop
+    # Training loop.
     print("Starting Training...")
     
     for epoch in range(config.EPOCHS):
@@ -98,21 +98,21 @@ def main():
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", unit="step")
         
         for step, batch in enumerate(pbar):
-            # Fetch Auxiliary Doc Batch
+            # Fetch the auxiliary document batch.
             try:
                 doc_batch = next(doc_iterator)
             except StopIteration:
                 doc_iterator = iter(doc_dataloader)
                 doc_batch = next(doc_iterator)
 
-            # Move Data to Device
+            # Move tensors to the target device.
             q_ids = batch["q_input_ids"].to(device)
             q_mask = batch["q_attention_mask"].to(device)
             d_emb_frozen = F.normalize(doc_batch["doc_emb"].to(device), p=2, dim=1)
             
             optimizer.zero_grad()
 
-            # --- A. Query Path Forward ---
+            # Query path.
             q_emb = encoder(q_ids, q_mask)
             
             all_logits, all_targets = indexer(
@@ -131,7 +131,7 @@ def main():
             
             loss_main = (LAMBDA_ROUTING * loss_route) + (LAMBDA_CONTRAST * loss_cont)
 
-            # --- B. Doc Aux Path Forward ---
+            # Auxiliary document path.
             dummy_qids = torch.zeros(len(doc_batch["docids"]))
             doc_logits_list, doc_targets_list = indexer(
                 dummy_qids, d_emb_frozen, doc_batch["docids"], 
@@ -140,7 +140,7 @@ def main():
             
             loss_doc_aux = sum(focal_loss_fn(l, t) for l, t in zip(doc_logits_list, doc_targets_list))
 
-            # --- C. Backward & Step ---
+            # Backward pass and optimizer step.
             loss = loss_main + (LAMBDA_DOC_AUX * loss_doc_aux)
             loss.backward()
             
@@ -149,7 +149,7 @@ def main():
             optimizer.step()
             scheduler.step()
             
-            # --- Logging ---
+            # Logging.
             total_loss += loss.item()
             total_route += loss_route.item()
             total_cont += loss_cont.item()
@@ -161,7 +161,7 @@ def main():
                 lr=f"{scheduler.get_last_lr()[0]:.1e}"
             )
             
-        # End of Epoch
+        # End of epoch.
         steps = len(dataloader)
         print(f"Epoch {epoch+1} Avg: Loss={total_loss/steps:.4f} (Rt={total_route/steps:.4f}, Ct={total_cont/steps:.4f}, Doc={total_doc/steps:.4f})")
 
@@ -171,5 +171,3 @@ def main():
     
 if __name__ == "__main__":
     main()
-
-    

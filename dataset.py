@@ -11,7 +11,7 @@ class MsMarcoDataset(Dataset):
                  doc_embedding_path, docid_to_index_path, neg_num=1, embedding_dim=768):
         self.neg_num = neg_num
         
-        # 1. Load queries
+        # Load queries.
         self.queries = {}
         print(f"Loading queries from {queries_path}...")
         with open(queries_path, "r", encoding="utf-8") as f:
@@ -19,14 +19,14 @@ class MsMarcoDataset(Dataset):
                 parts = line.strip().split("\t")
                 if len(parts) >= 2: self.queries[parts[0]] = parts[1]
 
-        # 2. Load tree structure mappings (path and leaf mappings)
+        # Load tree structure mappings.
         print(f"Loading tree mappings from {docid2path_path}...")
         with open(docid2path_path, "rb") as f:
             self.docid2path = pickle.load(f)
         with open(leaf2docs_path, "rb") as f:
             self.leaf2docs = pickle.load(f)
 
-        # 3. Load qrels and expand multi-path samples
+        # Load qrels and expand multi-path samples.
         self.samples = [] 
         print(f"Loading qrels and expanding multi-path samples...")
         
@@ -43,11 +43,11 @@ class MsMarcoDataset(Dataset):
                     if not paths:
                         continue
                     
-                    # Support the single-path format
+                    # Support single-path data.
                     if isinstance(paths[0], int):
                         paths = [paths]
                     
-                    # Core logic: generate one sample for each path
+                    # Generate one sample for each path.
                     for path_idx in range(len(paths)):
                         self.samples.append({
                             'qid': qid,
@@ -57,7 +57,7 @@ class MsMarcoDataset(Dataset):
 
         print(f"Dataset loaded. Total samples after expansion: {len(self.samples)}")
 
-        # 4. Load the DocID-to-memmap-index mapping
+        # Load the DocID-to-memmap-index mapping.
         self.docid2index = {}
         print(f"Loading DocID Index from {docid_to_index_path}...")
         with open(docid_to_index_path, "r", encoding="utf-8") as f:
@@ -73,7 +73,7 @@ class MsMarcoDataset(Dataset):
         
         self._docid_list = list(self.docid2index.keys())
 
-        # 5. Initialize the memmap
+        # Initialize the memmap.
         self.embedding_dim = embedding_dim
         self.embedding_path = doc_embedding_path
         file_size = os.path.getsize(doc_embedding_path)
@@ -104,10 +104,10 @@ class MsMarcoDataset(Dataset):
         query_text = self.queries[qid]
         pos_emb = self.get_doc_embedding(pos_docid)
 
-        # --- Negative sampling logic ---
+        # Negative sampling.
         neg_docids = []
         
-        # A. Hard negatives from the same leaf
+        # Hard negatives from the same leaf.
         paths = self.docid2path.get(pos_docid)
         if isinstance(paths[0], int): paths = [paths]
             
@@ -123,7 +123,7 @@ class MsMarcoDataset(Dataset):
             else:
                 neg_docids.extend(candidates)
 
-        # B. Random negatives
+        # Random negatives.
         while len(neg_docids) < self.neg_num:
             rand_docid = random.choice(self._docid_list)
             if rand_docid != pos_docid and rand_docid not in neg_docids:
@@ -182,7 +182,7 @@ class GetTargetPaths:
             return paths[path_idx]
         return paths[0]
 
-    # Get the parent node ID for teacher forcing
+    # Get the parent node ID for teacher forcing.
     def __call__(self, docids, path_indices, height=None):
         target_paths = []
         for i, docid in enumerate(docids):
@@ -201,7 +201,7 @@ class GetTargetPaths:
             target_paths.append(node_id)
         return target_paths
     
-    # Get the target child-node index for loss computation
+    # Get the target child-node index for loss computation.
     def get_index(self, docids, path_indices, height=None):
         target_indices = []
         for i, docid in enumerate(docids):

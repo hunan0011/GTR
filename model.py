@@ -10,8 +10,7 @@ class Similarity(nn.Module):
     def __init__(self, input_dim, dropout=0.1):
         super().__init__()
         
-        # Define the MLP structure: Linear -> LayerNorm -> GELU -> Linear
-        # This introduces non-linearity and better maps queries and candidates into a shared space
+        # Project queries and candidates into a shared scoring space.
         self.q_mlp = nn.Sequential(
             nn.Linear(input_dim, input_dim),
             nn.LayerNorm(input_dim),
@@ -33,14 +32,14 @@ class Similarity(nn.Module):
         query: [Batch, Dim]
         candidates: [Batch, Num_Candidates, Dim]
         """
-        # 1. MLP projection (non-linear transformation)
+        # MLP projection.
         q = self.q_mlp(query)        # [Batch, Dim]
         c = self.c_mlp(candidates)   # [Batch, Num_Candidates, Dim]
         # print(candidates)
-        # 2. Expand the query dimension for broadcasting: [Batch, 1, Dim] * [Batch, K, Dim]
+        # Expand the query dimension for broadcasting.
         q = q.unsqueeze(1)
         
-        # 3. Dot-product similarity: Sum(q * c) -> [Batch, Num_Candidates]
+        # Dot-product similarity.
         scores = torch.sum(q * c, dim=-1)
         # print(scores)
         return scores
@@ -100,7 +99,7 @@ class Indexer(nn.Module):
         self.fixed_centroids.weight.data.copy_(F.normalize(init_weights, p=2, dim=1))
         self.fixed_centroids.weight.requires_grad = False 
         
-        # Instantiate the MLP-based similarity module
+        # MLP-based similarity modules.
         self.scorers = nn.ModuleList([
             Similarity(input_dim=dim)
             for _ in range(self.H) 
@@ -130,7 +129,7 @@ class Indexer(nn.Module):
             
             current_scorer = self.scorers[h-1]
             
-            # Pass query [B, Dim] directly; Similarity handles dimension expansion and MLP projection internally
+            # Similarity handles dimension expansion and MLP projection.
             raw_logits = current_scorer(query_embeddings, child_anchors)
             logits = raw_logits * l_scale
             

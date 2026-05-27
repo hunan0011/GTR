@@ -103,7 +103,7 @@ class TreeInitialize:
             covariance_type="diag",
             covariance_regularization=1e-6,
             convergence_tolerance=1e-5,
-            batch_size=8192, # [Optimization] Set to 8192 for better GPU cache alignment
+            batch_size=8192, # Batch size chosen for GPU cache alignment.
             trainer_params=dict(
                 accelerator="gpu",
                 devices=1,
@@ -113,9 +113,7 @@ class TreeInitialize:
             )
         )
 
-        # =================================================================
-        # [Modification] Catch NaN values and fall back to sample means
-        # =================================================================
+        # Fall back to sample means if the GMM fit produces invalid values.
         try:
             gmm.fit(torch.from_numpy(X)) 
             probs = gmm.predict_proba(torch.from_numpy(X)).cpu().numpy()
@@ -127,18 +125,14 @@ class TreeInitialize:
             means_raw = np.full((K, EMBEDDING_DIM), np.nan)
             vars_raw = np.full((K, EMBEDDING_DIM), np.nan)
 
-        # Check whether NaN values occur
         if np.isnan(means_raw).any() or np.isnan(vars_raw).any() or np.isnan(probs).any():
-            print(f"[NaN Detected] Node with {N} samples produced NaN values; using the sample mean as fallback.")
+            print(f"[Warning] GMM produced invalid values for a node with {N} samples; using the sample mean as fallback.")
             probs = np.ones((N, K), dtype=np.float32) / K
             
-            # Use the sample mean as fallback centroids
             fallback_mean = np.mean(X, axis=0)
             means_raw = np.tile(fallback_mean, (K, 1))
             
-            # Use default variance to avoid downstream errors
             vars_raw = np.ones((K, EMBEDDING_DIM), dtype=np.float32)
-        # =================================================================
 
         centers = l2_normalize(means_raw)
         variances = vars_raw + 1e-9
@@ -158,23 +152,17 @@ class TreeInitialize:
 
         cluster_map = [[] for _ in range(self.B)]
         
-        # [Optimization 2] Replace slow Python loops with NumPy vectorized operations
+        # Assign samples with a vectorized posterior-probability mask.
         if K > 0:
-            # 1. Build the boolean assignment matrix for posterior probabilities above the threshold (N, K)
             mask = probs >= PROB_THRESHOLD
             
-            # 2. Find samples with no cluster probability above the threshold (shape: N)
             no_assignment_mask = ~mask.any(axis=1)
             
-            # 3. For unassigned samples, select the cluster with the maximum probability
             if no_assignment_mask.any():
-                # Get the cluster indices with maximum probability
                 max_idxs = np.argmax(probs[no_assignment_mask], axis=1)
-                # Force the corresponding mask positions to True
                 row_idxs = np.where(no_assignment_mask)[0]
                 mask[row_idxs, max_idxs] = True
             
-            # 4. Assign sample indices to cluster lists according to the boolean matrix
             for k in range(K):
                 cluster_map[k] = np.where(mask[:, k])[0]
 
@@ -309,12 +297,12 @@ if __name__ == "__main__":
         pids = np.arange(len(X))
         X_view = X
 
-    # 1. Build the tree
+    # Build the tree.
     tree_init = TreeInitialize(X_view, pids, NODE_BALANCE, TREE_HEIGHT)
     tree = tree_init.clustering_tree()
     tree_init.assign_node_ids()
 
-    # 2. Generate required mapping files
+    # Generate required mapping files.
     print("--- Generating required auxiliary files ---")
     save_object(build_children_map(tree_init), CHILDREN_EMBEDDINGS_PATH)
     print(f"Saved children embeddings to {CHILDREN_EMBEDDINGS_PATH}")
