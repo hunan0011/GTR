@@ -1,7 +1,7 @@
-DATA_TYPE = "passage"
+DATA_TYPE = "doc"
 
-MEMMAP_PATH = "./data/msmarco/passage/msmarco-passages-bge.memmap"
-ID2OFFSET = "./data/msmarco/passage/msmarco-passages-bge_id2offset.tsv"
+MEMMAP_PATH = "/home/power/jiangyutao/msmarco_docs_bge_embeddings.memmap"
+ID2OFFSET = "/home/power/jiangyutao/msmarco_docs_bge_id2offset.tsv"
 EMBEDDING_DIM = 768
 
 TREE_DIR = "./tree/cluster_docs_tree"
@@ -12,8 +12,8 @@ LEAF2ID = f"{TREE_DIR}/leaf2docs.pkl"
 
 RANDOM_SEED = 42
 
-TRAIN_QUERIES = "./data/msmarco/passage/queries.train.tsv"
-TRAIN_QRELS = "./data/msmarco/passage/qrels.train.tsv"
+TRAIN_QUERIES = "/home/power/jiangyutao/data/doc/dataset/msmarco-doctrain-queries.tsv"
+TRAIN_QRELS = "/home/power/jiangyutao/data/doc/dataset/msmarco-doctrain-qrels.tsv"
 
 OUTPUT_DIR = "./output"
 
@@ -30,18 +30,18 @@ SAVE_INTERVAL = 1
 BATCH_SIZE = 128
 EPOCHS = 15
 
-DEV_QUERYS = "./data/msmarco/passage/queries.dev.small.tsv"
-DEV_QRELS = "./data/msmarco/passage/qrels.dev.tsv"
+DEV_QUERYS = "/home/power/jiangyutao/data/doc/dataset/msmarco-docdev-queries.tsv"
+DEV_QRELS = "/home/power/jiangyutao/data/doc/dataset/msmarco-docdev-qrels.tsv"
 
-TREC_QUERYS_20 = "./data/msmarco/passage/msmarco-pass-test2020-queries.tsv"
-TREC_QUERL_20 = "./data/msmarco/passage/2020qrels-pass.txt"
+TREC_QUERYS_20 = "/home/power/jiangyutao/data/doc/dataset/msmarco-doc-test2020-queries.tsv"
+TREC_QUERL_20 = "/home/power/jiangyutao/data/doc/dataset/2020qrels-docs.txt"
 
-TREC_QUERYS_19 = "./data/msmarco/passage/msmarco-test2019-queries.tsv"
-TREC_QUERL_19 = "./data/msmarco/passage/2019qrels-pass.txt"
+TREC_QUERYS_19 = "/home/power/jiangyutao/data/doc/dataset/msmarco-test2019-queries.tsv"
+TREC_QUERL_19 = "/home/power/jiangyutao/data/doc/dataset/2019qrels-docs.txt"
 
 NEG_NUM = 127
 
-PROB_THRESHOLD = 0.000077
+PROB_THRESHOLD = 0.0001
 
-NODE_BALANCE = 13
+NODE_BALANCE = 10
 TREE_HEIGHT = 5
